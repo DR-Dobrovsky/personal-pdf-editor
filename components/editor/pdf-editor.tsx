@@ -9,17 +9,30 @@ import PdfPage from "./pdf-page";
 import PropertyInspector from "./property-inspector";
 import SignatureDialog from "./signature-dialog";
 import UploadScreen from "./upload-screen";
-import { cloneSnapshot, displaySize, uid } from "@/lib/editor-utils";
+import {
+  basePageDisplaySize,
+  clamp,
+  cloneSnapshot,
+  pageDisplaySize,
+  spaceAtVisualY,
+  spaceVisualTop,
+  uid,
+  visualYToSourceY,
+} from "@/lib/editor-utils";
 import { exportPdf } from "@/lib/export-pdf";
 import type {
   EditorElement,
   EditorPage,
+  EditorSelection,
   EditorSnapshot,
   EditorTool,
   Point,
+  SpaceBand,
 } from "@/types/editor";
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
+const DEFAULT_SPACE_HEIGHT = 96;
+const MIN_SPACE_HEIGHT = 24;
 
 export default function PdfEditor() {
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
@@ -28,7 +41,7 @@ export default function PdfEditor() {
   const [pages, setPages] = useState<EditorPage[]>([]);
   const [elements, setElements] = useState<EditorElement[]>([]);
   const [activePageId, setActivePageId] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<EditorSelection>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [tool, setTool] = useState<EditorTool>("select");
   const [zoom, setZoom] = useState(1);
@@ -62,7 +75,7 @@ export default function PdfEditor() {
   const restore = useCallback((value: EditorSnapshot) => {
     setPages(value.pages);
     setElements(value.elements);
-    setSelectedId(null);
+    setSelection(null);
     setEditingTextId(null);
     if (!value.pages.some(({ id }) => id === activePageId)) {
       setActivePageId(value.pages[0]?.id ?? "");
@@ -85,6 +98,79 @@ export default function PdfEditor() {
     restore(next);
   }, [future, restore, snapshot]);
 
+  const removeSpace = useCallback((pageId: string, spaceId: string) => {
+    const page = pagesRef.current.find(({ id }) => id === pageId);
+    const space = page?.spaces.find(({ id }) => id === spaceId);
+    if (!page || !space) return;
+    const top = spaceVisualTop(page, space);
+    const bottom = top + space.height;
+
+    pushHistory();
+    setPages((items) => items.map((item) =>
+      item.id === pageId
+        ? { ...item, spaces: item.spaces.filter(({ id }) => id !== spaceId) }
+        : item,
+    ));
+    setElements((items) => items.map((element) => {
+      if (element.pageId !== pageId || element.y < top) return element;
+      const y = element.y >= bottom ? element.y - space.height : top;
+      return { ...element, y: Math.max(0, y) } as EditorElement;
+    }));
+    setSelection(null);
+    setEditingTextId(null);
+  }, [pushHistory]);
+
+  const updateSpaceHeight = useCallback((pageId: string, spaceId: string, requestedHeight: number) => {
+    if (!Number.isFinite(requestedHeight)) return;
+    const page = pagesRef.current.find(({ id }) => id === pageId);
+    const space = page?.spaces.find(({ id }) => id === spaceId);
+    if (!page || !space) return;
+    const top = spaceVisualTop(page, space);
+    const minimumForGapElements = elementsRef.current.reduce((minimum, element) =>
+      element.pageId === pageId && element.y >= top && element.y < top + space.height
+        ? Math.max(minimum, element.height)
+        : minimum,
+    MIN_SPACE_HEIGHT);
+    const nextHeight = clamp(
+      Math.max(requestedHeight, minimumForGapElements),
+      MIN_SPACE_HEIGHT,
+      basePageDisplaySize(page).height,
+    );
+    const delta = nextHeight - space.height;
+    if (Math.abs(delta) < 0.01) return;
+    const oldBottom = top + space.height;
+    const nextBottom = top + nextHeight;
+
+    const nextPages = pagesRef.current.map((item) =>
+      item.id === pageId
+        ? {
+            ...item,
+            spaces: item.spaces.map((candidate) =>
+              candidate.id === spaceId ? { ...candidate, height: nextHeight } : candidate,
+            ),
+          }
+        : item,
+    );
+    const nextElements = elementsRef.current.map((element) => {
+      if (element.pageId !== pageId || element.y < top) return element;
+      if (element.y >= oldBottom) {
+        return { ...element, y: element.y + delta } as EditorElement;
+      }
+      if (delta < 0 && element.y + element.height > nextBottom) {
+        return {
+          ...element,
+          y: Math.max(top, nextBottom - element.height),
+        } as EditorElement;
+      }
+      return element;
+    });
+
+    pagesRef.current = nextPages;
+    elementsRef.current = nextElements;
+    setPages(nextPages);
+    setElements(nextElements);
+  }, []);
+
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -95,21 +181,25 @@ export default function PdfEditor() {
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
         event.preventDefault();
         redo();
-      } else if (!editingField && (event.key === "Delete" || event.key === "Backspace") && selectedId) {
+      } else if (!editingField && (event.key === "Delete" || event.key === "Backspace") && selection) {
         event.preventDefault();
-        pushHistory();
-        setElements((items) => items.filter(({ id }) => id !== selectedId));
-        setSelectedId(null);
-        setEditingTextId(null);
+        if (selection.kind === "space") {
+          removeSpace(selection.pageId, selection.id);
+        } else {
+          pushHistory();
+          setElements((items) => items.filter(({ id }) => id !== selection.id));
+          setSelection(null);
+          setEditingTextId(null);
+        }
       } else if (event.key === "Escape") {
         setEditingTextId(null);
-        setSelectedId(null);
+        setSelection(null);
         setTool("select");
       }
     };
     window.addEventListener("keydown", handleKeyboard);
     return () => window.removeEventListener("keydown", handleKeyboard);
-  }, [pushHistory, redo, selectedId, undo]);
+  }, [pushHistory, redo, removeSpace, selection, undo]);
 
   useEffect(() => {
     const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
@@ -161,6 +251,7 @@ export default function PdfEditor() {
         Array.from({ length: document.numPages }, async (_, sourceIndex) => {
           const pdfPage = await document.getPage(sourceIndex + 1);
           const viewport = pdfPage.getViewport({ scale: 1, rotation: 0 });
+          const annotations = await pdfPage.getAnnotations();
           return {
             id: uid("page"),
             sourceIndex,
@@ -168,6 +259,8 @@ export default function PdfEditor() {
             height: viewport.height,
             originalRotation: pdfPage.rotate,
             rotation: 0,
+            hasAnnotations: annotations.length > 0,
+            spaces: [],
           } satisfies EditorPage;
         }),
       );
@@ -181,7 +274,7 @@ export default function PdfEditor() {
       setElements([]);
       setPast([]);
       setFuture([]);
-      setSelectedId(null);
+      setSelection(null);
       setEditingTextId(null);
       setActivePageId(loadedPages[0]?.id ?? "");
       setTool("select");
@@ -198,14 +291,45 @@ export default function PdfEditor() {
   const addElement = (element: EditorElement, startTextEditing = false) => {
     pushHistory();
     setElements((items) => [...items, element]);
-    setSelectedId(element.id);
+    setSelection({ kind: "element", id: element.id });
     setEditingTextId(startTextEditing ? element.id : null);
     setTool("select");
   };
 
   const placeElement = (page: EditorPage, point: Point) => {
-    const totalRotation = page.originalRotation + page.rotation;
-    const size = displaySize(page.width, page.height, totalRotation);
+    const size = pageDisplaySize(page);
+    if (tool === "space") {
+      if (page.hasAnnotations) {
+        setNotice("Space is unavailable on pages with links or form fields, so those controls are not damaged.");
+        setTool("select");
+        return;
+      }
+      const existing = spaceAtVisualY(page, point.y);
+      if (existing) {
+        setSelection({ kind: "space", pageId: page.id, id: existing.id });
+        setTool("select");
+        return;
+      }
+      const base = basePageDisplaySize(page);
+      const space: SpaceBand = {
+        id: uid("space"),
+        sourceY: clamp(visualYToSourceY(page, point.y), 0, base.height),
+        height: DEFAULT_SPACE_HEIGHT,
+      };
+      pushHistory();
+      setPages((items) => items.map((item) =>
+        item.id === page.id ? { ...item, spaces: [...item.spaces, space] } : item,
+      ));
+      setElements((items) => items.map((element) =>
+        element.pageId === page.id && element.y >= point.y
+          ? { ...element, y: element.y + space.height } as EditorElement
+          : element,
+      ));
+      setSelection({ kind: "space", pageId: page.id, id: space.id });
+      setEditingTextId(null);
+      setTool("select");
+      return;
+    }
     if (tool === "text") {
       const textElement: EditorElement = {
         id: uid("text"), pageId: page.id, type: "text",
@@ -233,7 +357,7 @@ export default function PdfEditor() {
   const addImageSource = (src: string, kind: "image" | "signature", naturalRatio = 3) => {
     const page = pagesRef.current.find(({ id }) => id === activePageId) ?? pagesRef.current[0];
     if (!page) return;
-    const size = displaySize(page.width, page.height, page.originalRotation + page.rotation);
+    const size = pageDisplaySize(page);
     const width = kind === "signature" ? 220 : Math.min(220, size.width * 0.45);
     const height = kind === "signature" ? 74 : Math.min(width / naturalRatio, size.height * 0.4);
     addElement({
@@ -266,15 +390,20 @@ export default function PdfEditor() {
   };
 
   const deleteSelected = () => {
-    if (!selectedId) return;
+    if (!selection) return;
+    if (selection.kind === "space") {
+      removeSpace(selection.pageId, selection.id);
+      return;
+    }
     pushHistory();
-    setElements((items) => items.filter(({ id }) => id !== selectedId));
-    setSelectedId(null);
+    setElements((items) => items.filter(({ id }) => id !== selection.id));
+    setSelection(null);
     setEditingTextId(null);
   };
 
   const duplicateSelected = () => {
-    const original = elementsRef.current.find(({ id }) => id === selectedId);
+    if (selection?.kind !== "element") return;
+    const original = elementsRef.current.find(({ id }) => id === selection.id);
     if (!original) return;
     const duplicate = { ...structuredClone(original), id: uid(original.type), x: original.x + 14, y: original.y + 14 } as EditorElement;
     addElement(duplicate);
@@ -295,7 +424,11 @@ export default function PdfEditor() {
   const rotatePage = (pageId: string) => {
     const page = pagesRef.current.find(({ id }) => id === pageId);
     if (!page) return;
-    const oldSize = displaySize(page.width, page.height, page.originalRotation + page.rotation);
+    if (page.spaces.length > 0) {
+      setNotice("Remove inserted spaces before rotating this page.");
+      return;
+    }
+    const oldSize = basePageDisplaySize(page);
     pushHistory();
     setPages((items) => items.map((item) => item.id === pageId ? { ...item, rotation: (item.rotation + 90) % 360 } : item));
     setElements((items) => items.map((element) => element.pageId === pageId ? ({
@@ -311,7 +444,14 @@ export default function PdfEditor() {
     const index = pagesRef.current.findIndex(({ id }) => id === pageId);
     if (index < 0) return;
     const copyId = uid("page");
-    const copy = { ...pagesRef.current[index], id: copyId };
+    const copy = {
+      ...structuredClone(pagesRef.current[index]),
+      id: copyId,
+      spaces: pagesRef.current[index].spaces.map((space) => ({
+        ...space,
+        id: uid("space"),
+      })),
+    };
     const copiedElements = elementsRef.current
       .filter((element) => element.pageId === pageId)
       .map((element) => ({ ...structuredClone(element), id: uid(element.type), pageId: copyId } as EditorElement));
@@ -327,7 +467,7 @@ export default function PdfEditor() {
     pushHistory();
     setPages((items) => items.filter(({ id }) => id !== pageId));
     setElements((items) => items.filter((element) => element.pageId !== pageId));
-    setSelectedId(null);
+    setSelection(null);
     if (activePageId === pageId) {
       setActivePageId(pagesRef.current[index + 1]?.id ?? pagesRef.current[index - 1]?.id ?? "");
     }
@@ -366,7 +506,15 @@ export default function PdfEditor() {
     return <UploadScreen busy={loading} error={error} onFile={loadFile} />;
   }
 
-  const selectedElement = elements.find(({ id }) => id === selectedId);
+  const selectedElement = selection?.kind === "element"
+    ? elements.find(({ id }) => id === selection.id)
+    : undefined;
+  const selectedSpacePage = selection?.kind === "space"
+    ? pages.find(({ id }) => id === selection.pageId)
+    : undefined;
+  const selectedSpace = selection?.kind === "space"
+    ? selectedSpacePage?.spaces.find(({ id }) => id === selection.id)
+    : undefined;
 
   return (
     <main className="app-shell editor-shell">
@@ -391,7 +539,7 @@ export default function PdfEditor() {
         canUndo={past.length > 0}
         canRedo={future.length > 0}
         exporting={exporting}
-        onTool={(next) => { setTool(next); setSelectedId(null); setEditingTextId(null); }}
+        onTool={(next) => { setTool(next); setSelection(null); setEditingTextId(null); }}
         onUndo={undo}
         onRedo={redo}
         onZoom={setZoom}
@@ -423,22 +571,28 @@ export default function PdfEditor() {
                   zoom={zoom}
                   tool={tool}
                   elements={elements.filter(({ pageId }) => pageId === page.id)}
-                  selectedId={selectedId}
+                  selectedElementId={selection?.kind === "element" ? selection.id : null}
+                  selectedSpaceId={selection?.kind === "space" && selection.pageId === page.id ? selection.id : null}
                   editingTextId={editingTextId}
                   onActivate={() => setActivePageId(page.id)}
-                  onSelect={(id) => {
-                    setSelectedId(id);
+                  onSelectElement={(id) => {
+                    setSelection(id ? { kind: "element", id } : null);
                     if (id !== editingTextId) setEditingTextId(null);
+                  }}
+                  onSelectSpace={(id) => {
+                    setSelection({ kind: "space", pageId: page.id, id });
+                    setEditingTextId(null);
                   }}
                   onStartTextEditing={(id) => {
                     if (editingTextId === id) return;
                     pushHistory();
-                    setSelectedId(id);
+                    setSelection({ kind: "element", id });
                     setEditingTextId(id);
                   }}
                   onFinishTextEditing={() => setEditingTextId(null)}
                   onBeginMutation={pushHistory}
                   onUpdate={updateElement}
+                  onResizeSpace={(id, height) => updateSpaceHeight(page.id, id, height)}
                   onPlace={(point) => placeElement(page, point)}
                   onDraw={(drawing) => addElement({
                     id: uid("draw"), pageId: page.id, type: "draw", ...drawing,
@@ -452,8 +606,13 @@ export default function PdfEditor() {
 
         <PropertyInspector
           element={selectedElement}
+          space={selectedSpace}
+          spaceTop={selectedSpace && selectedSpacePage ? spaceVisualTop(selectedSpacePage, selectedSpace) : undefined}
           onBeginChange={pushHistory}
-          onChange={(patch) => selectedId && updateElement(selectedId, patch)}
+          onChange={(patch) => selection?.kind === "element" && updateElement(selection.id, patch)}
+          onSpaceHeightChange={(height) => {
+            if (selection?.kind === "space") updateSpaceHeight(selection.pageId, selection.id, height);
+          }}
           onDelete={deleteSelected}
           onDuplicate={duplicateSelected}
         />

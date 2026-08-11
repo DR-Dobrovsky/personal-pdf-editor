@@ -2,8 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
-import type { EditorElement, EditorPage, EditorTool, Point } from "@/types/editor";
-import { clamp, displaySize } from "@/lib/editor-utils";
+import type {
+  EditorElement,
+  EditorPage,
+  EditorTool,
+  Point,
+  SpaceBand,
+} from "@/types/editor";
+import {
+  basePageDisplaySize,
+  clamp,
+  orderedSpaces,
+  pageDisplaySize,
+  spaceVisualTop,
+} from "@/lib/editor-utils";
 
 interface PdfPageProps {
   document: PDFDocumentProxy;
@@ -12,14 +24,17 @@ interface PdfPageProps {
   zoom: number;
   tool: EditorTool;
   elements: EditorElement[];
-  selectedId: string | null;
+  selectedElementId: string | null;
+  selectedSpaceId: string | null;
   editingTextId: string | null;
   onActivate: () => void;
-  onSelect: (id: string | null) => void;
+  onSelectElement: (id: string | null) => void;
+  onSelectSpace: (id: string) => void;
   onStartTextEditing: (id: string) => void;
   onFinishTextEditing: () => void;
   onBeginMutation: () => void;
   onUpdate: (id: string, patch: Partial<EditorElement>) => void;
+  onResizeSpace: (id: string, height: number) => void;
   onPlace: (point: Point) => void;
   onDraw: (drawing: { x: number; y: number; width: number; height: number; points: Point[] }) => void;
 }
@@ -31,25 +46,36 @@ export default function PdfPage({
   zoom,
   tool,
   elements,
-  selectedId,
+  selectedElementId,
+  selectedSpaceId,
   editingTextId,
   onActivate,
-  onSelect,
+  onSelectElement,
+  onSelectSpace,
   onStartTextEditing,
   onFinishTextEditing,
   onBeginMutation,
   onUpdate,
+  onResizeSpace,
   onPlace,
   onDraw,
 }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sourceRenderRef = useRef<{
+    canvas: HTMLCanvasElement;
+    viewportWidth: number;
+    viewportHeight: number;
+    outputScale: number;
+  } | null>(null);
+  const [sourceRenderVersion, setSourceRenderVersion] = useState(0);
   const [draft, setDraft] = useState<Point[] | null>(null);
   const [pixelRatio, setPixelRatio] = useState(() =>
     typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
   );
   const draftRef = useRef<Point[] | null>(null);
   const totalRotation = page.originalRotation + page.rotation;
-  const size = displaySize(page.width, page.height, totalRotation);
+  const baseSize = basePageDisplaySize(page);
+  const size = pageDisplaySize(page);
 
   useEffect(() => {
     const updatePixelRatio = () => {
@@ -63,38 +89,95 @@ export default function PdfPage({
   useEffect(() => {
     let active = true;
     let task: RenderTask | undefined;
-    void document.getPage(page.sourceIndex + 1).then((pdfPage) => {
-      if (!active || !canvasRef.current) return;
+    sourceRenderRef.current = null;
+    void document.getPage(page.sourceIndex + 1).then(async (pdfPage) => {
+      if (!active) return;
       const viewport = pdfPage.getViewport({ scale: zoom, rotation: totalRotation });
-      const canvas = canvasRef.current;
+      const sourceCanvas = window.document.createElement("canvas");
       const desiredOutputScale = Math.max(2, pixelRatio);
       const maxCanvasPixels = 12_000_000;
       const scaleForPixelLimit = Math.sqrt(
         maxCanvasPixels / Math.max(1, viewport.width * viewport.height),
       );
-      const outputScale = Math.max(1, Math.min(desiredOutputScale, scaleForPixelLimit));
-      canvas.width = Math.ceil(viewport.width * outputScale);
-      canvas.height = Math.ceil(viewport.height * outputScale);
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-      canvas.dataset.outputScale = outputScale.toFixed(2);
-      const context = canvas.getContext("2d", { alpha: false });
-      if (!context) return;
-      context.imageSmoothingEnabled = false;
-      const scaleX = canvas.width / viewport.width;
-      const scaleY = canvas.height / viewport.height;
+      const outputScale = Math.min(desiredOutputScale, scaleForPixelLimit);
+
+      sourceCanvas.width = Math.max(1, Math.ceil(viewport.width * outputScale));
+      sourceCanvas.height = Math.max(1, Math.ceil(viewport.height * outputScale));
+      const sourceContext = sourceCanvas.getContext("2d", { alpha: false });
+      if (!sourceContext) return;
+      sourceContext.imageSmoothingEnabled = false;
       task = pdfPage.render({
-        canvas,
-        canvasContext: context,
+        canvas: sourceCanvas,
+        canvasContext: sourceContext,
         viewport,
-        transform: [scaleX, 0, 0, scaleY, 0, 0],
+        transform: [outputScale, 0, 0, outputScale, 0, 0],
       });
-      return task.promise;
+      await task.promise;
+      if (!active) return;
+      sourceRenderRef.current = {
+        canvas: sourceCanvas,
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
+        outputScale,
+      };
+      setSourceRenderVersion((version) => version + 1);
     }).catch((error: unknown) => {
       if (active && !(error instanceof Error && error.name === "RenderingCancelledException")) console.error(error);
     });
     return () => { active = false; task?.cancel(); };
   }, [document, page.sourceIndex, pixelRatio, totalRotation, zoom]);
+
+  useEffect(() => {
+    const source = sourceRenderRef.current;
+    const canvas = canvasRef.current;
+    if (!source || !canvas) return;
+    const cssWidth = size.width * zoom;
+    const cssHeight = size.height * zoom;
+    const maxCanvasPixels = 12_000_000;
+    const scaleForPixelLimit = Math.sqrt(
+      maxCanvasPixels / Math.max(1, cssWidth * cssHeight),
+    );
+    const outputScale = Math.min(source.outputScale, scaleForPixelLimit);
+
+    canvas.width = Math.max(1, Math.ceil(cssWidth * outputScale));
+    canvas.height = Math.max(1, Math.ceil(cssHeight * outputScale));
+    canvas.style.width = `${cssWidth}px`;
+    canvas.style.height = `${cssHeight}px`;
+    canvas.dataset.outputScale = outputScale.toFixed(2);
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    context.imageSmoothingEnabled = false;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const sourceScaleY = source.canvas.height / source.viewportHeight;
+    const destinationScaleY = canvas.height / cssHeight;
+    let sourceStart = 0;
+    let offset = 0;
+
+    const drawStrip = (sourceEnd: number) => {
+      const stripHeight = Math.max(0, sourceEnd - sourceStart);
+      if (stripHeight > 0) {
+        context.drawImage(
+          source.canvas,
+          0,
+          sourceStart * zoom * sourceScaleY,
+          source.canvas.width,
+          stripHeight * zoom * sourceScaleY,
+          0,
+          (sourceStart + offset) * zoom * destinationScaleY,
+          canvas.width,
+          stripHeight * zoom * destinationScaleY,
+        );
+      }
+      sourceStart = sourceEnd;
+    };
+
+    for (const space of orderedSpaces(page)) {
+      drawStrip(clamp(space.sourceY, sourceStart, baseSize.height));
+      offset += space.height;
+    }
+    drawStrip(baseSize.height);
+  }, [baseSize.height, page, size.height, size.width, sourceRenderVersion, zoom]);
 
   const relativePoint = (
     event: React.PointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>,
@@ -120,12 +203,12 @@ export default function PdfPage({
             setDraft([first]);
             event.currentTarget.setPointerCapture(event.pointerId);
           } else if (tool === "select") {
-            onSelect(null);
+            onSelectElement(null);
           }
         }}
         onClick={(event) => {
           if (event.target !== event.currentTarget && event.target !== canvasRef.current) return;
-          if (tool === "text" || tool === "highlight" || tool === "redact") {
+          if (tool === "space" || tool === "text" || tool === "highlight" || tool === "redact") {
             onActivate();
             onPlace(relativePoint(event));
           }
@@ -157,18 +240,33 @@ export default function PdfPage({
         }}
       >
         <canvas ref={canvasRef} className="pdf-canvas" />
+        <div className="space-layer">
+          {orderedSpaces(page).map((space) => (
+            <SpaceBandControl
+              key={space.id}
+              space={space}
+              top={spaceVisualTop(page, space)}
+              zoom={zoom}
+              selected={selectedSpaceId === space.id}
+              enabled={tool === "select" || tool === "space"}
+              onSelect={() => onSelectSpace(space.id)}
+              onBeginMutation={onBeginMutation}
+              onResize={(height) => onResizeSpace(space.id, height)}
+            />
+          ))}
+        </div>
         <div className="elements-layer">
           {elements.map((element) => (
             <EditableElement
               key={element.id}
               element={element}
               zoom={zoom}
-              selected={selectedId === element.id}
+              selected={selectedElementId === element.id}
               editing={editingTextId === element.id}
               pageWidth={size.width}
               pageHeight={size.height}
               enabled={tool === "select"}
-              onSelect={() => onSelect(element.id)}
+              onSelect={() => onSelectElement(element.id)}
               onStartTextEditing={() => onStartTextEditing(element.id)}
               onFinishTextEditing={onFinishTextEditing}
               onBeginMutation={onBeginMutation}
@@ -184,6 +282,79 @@ export default function PdfPage({
       </div>
       <span className="page-stage-label">Page {pageNumber}</span>
     </section>
+  );
+}
+
+interface SpaceBandControlProps {
+  space: SpaceBand;
+  top: number;
+  zoom: number;
+  selected: boolean;
+  enabled: boolean;
+  onSelect: () => void;
+  onBeginMutation: () => void;
+  onResize: (height: number) => void;
+}
+
+function SpaceBandControl({
+  space,
+  top,
+  zoom,
+  selected,
+  enabled,
+  onSelect,
+  onBeginMutation,
+  onResize,
+}: SpaceBandControlProps) {
+  const resizeRef = useRef<{
+    pointerY: number;
+    height: number;
+    started: boolean;
+  } | null>(null);
+
+  return (
+    <div
+      className={`space-band ${selected ? "is-selected" : ""}`}
+      style={{
+        top: top * zoom,
+        height: space.height * zoom,
+        pointerEvents: enabled ? "auto" : "none",
+      }}
+      onPointerDown={(event) => {
+        if (!enabled) return;
+        event.stopPropagation();
+        onSelect();
+      }}
+    >
+      {selected && <span className="space-band-label">Space · {Math.round(space.height)} pt</span>}
+      {selected && (
+        <button
+          className="space-resize-handle"
+          aria-label="Resize blank space"
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            resizeRef.current = {
+              pointerY: event.clientY,
+              height: space.height,
+              started: false,
+            };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (!resizeRef.current) return;
+            if (!resizeRef.current.started) {
+              resizeRef.current.started = true;
+              onBeginMutation();
+            }
+            onResize(
+              Math.max(24, resizeRef.current.height + (event.clientY - resizeRef.current.pointerY) / zoom),
+            );
+          }}
+          onPointerUp={() => { resizeRef.current = null; }}
+          onPointerCancel={() => { resizeRef.current = null; }}
+        />
+      )}
+    </div>
   );
 }
 
