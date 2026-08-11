@@ -1,24 +1,30 @@
 "use client";
 
 import { AlignCenter, AlignLeft, AlignRight, Copy, Trash2 } from "lucide-react";
-import type { EditorElement } from "@/types/editor";
+import type { EditorElement, SpaceBand } from "@/types/editor";
 
 interface PropertyInspectorProps {
   element?: EditorElement;
+  space?: SpaceBand;
+  spaceTop?: number;
   onBeginChange: () => void;
   onChange: (patch: Partial<EditorElement>) => void;
+  onSpaceHeightChange: (height: number) => void;
   onDelete: () => void;
   onDuplicate: () => void;
 }
 
 export default function PropertyInspector({
   element,
+  space,
+  spaceTop,
   onBeginChange,
   onChange,
+  onSpaceHeightChange,
   onDelete,
   onDuplicate,
 }: PropertyInspectorProps) {
-  if (!element) {
+  if (!element && !space) {
     return (
       <aside className="inspector-panel inspector-empty">
         <div className="inspector-empty-icon">✦</div>
@@ -27,6 +33,49 @@ export default function PropertyInspector({
       </aside>
     );
   }
+
+  if (space) {
+    return (
+      <aside className="inspector-panel">
+        <div className="panel-title-row">
+          <div>
+            <span className="panel-kicker">Selected</span>
+            <h3>Blank space</h3>
+          </div>
+          <div className="mini-actions">
+            <button className="danger-icon" onClick={onDelete} title="Delete"><Trash2 size={16} /></button>
+          </div>
+        </div>
+
+        <div className="space-inspector-preview" aria-hidden="true">
+          <span />
+          <strong>Blank area</strong>
+          <span />
+        </div>
+
+        <div className="field-grid dimensions-grid">
+          <label>
+            <span>Position</span>
+            <input type="number" value={Math.round(spaceTop ?? space.sourceY)} readOnly />
+          </label>
+          <label>
+            <span>Height</span>
+            <input
+              type="number"
+              min={24}
+              value={Math.round(space.height)}
+              onFocus={onBeginChange}
+              onChange={(event) => onSpaceHeightChange(Number(event.target.value))}
+            />
+          </label>
+        </div>
+
+        <p className="inspector-tip">Drag the lower edge on the page to resize. Content below moves with it.</p>
+      </aside>
+    );
+  }
+
+  if (!element) return null;
 
   const fieldChange = (patch: Partial<EditorElement>) => {
     onBeginChange();

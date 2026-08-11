@@ -34,6 +34,7 @@ interface EditorToolbarProps {
 
 const TOOLS = [
   { id: "select" as const, label: "Select", icon: MousePointer2 },
+  { id: "space" as const, label: "Space", icon: Minus },
   { id: "text" as const, label: "Text", icon: Type },
   { id: "draw" as const, label: "Draw", icon: PenLine },
   { id: "highlight" as const, label: "Highlight", icon: Highlighter },

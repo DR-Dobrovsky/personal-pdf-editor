@@ -1,5 +1,6 @@
 export type EditorTool =
   | "select"
+  | "space"
   | "text"
   | "image"
   | "signature"
@@ -9,6 +10,13 @@ export type EditorTool =
 
 export type Point = { x: number; y: number };
 
+export interface SpaceBand {
+  id: string;
+  /** Cut position in the original page's rotated visual coordinates. */
+  sourceY: number;
+  height: number;
+}
+
 export interface EditorPage {
   id: string;
   sourceIndex: number;
@@ -16,7 +24,14 @@ export interface EditorPage {
   height: number;
   originalRotation: number;
   rotation: number;
+  hasAnnotations: boolean;
+  spaces: SpaceBand[];
 }
+
+export type EditorSelection =
+  | { kind: "element"; id: string }
+  | { kind: "space"; pageId: string; id: string }
+  | null;
 
 interface ElementBase {
   id: string;
