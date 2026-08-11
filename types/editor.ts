@@ -17,6 +17,25 @@ export interface SpaceBand {
   height: number;
 }
 
+export type LinkDestinationMode =
+  | "XYZ"
+  | "Fit"
+  | "FitH"
+  | "FitV"
+  | "FitR"
+  | "FitB"
+  | "FitBH"
+  | "FitBV";
+
+export interface SourceLinkAnnotation {
+  internal: boolean;
+  targetSourceIndex?: number;
+  destination?: {
+    mode: LinkDestinationMode;
+    parameters: Array<number | null>;
+  };
+}
+
 export interface EditorPage {
   id: string;
   sourceIndex: number;
@@ -24,7 +43,8 @@ export interface EditorPage {
   height: number;
   originalRotation: number;
   rotation: number;
-  hasAnnotations: boolean;
+  hasFormFields: boolean;
+  links: SourceLinkAnnotation[];
   spaces: SpaceBand[];
 }
 

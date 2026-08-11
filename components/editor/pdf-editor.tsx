@@ -26,6 +26,7 @@ import type {
   EditorSelection,
   EditorSnapshot,
   EditorTool,
+  LinkDestinationMode,
   Point,
   SpaceBand,
 } from "@/types/editor";
@@ -33,6 +34,37 @@ import type {
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const DEFAULT_SPACE_HEIGHT = 96;
 const MIN_SPACE_HEIGHT = 24;
+
+type PdfJsAnnotation = {
+  annotationType?: number;
+  subtype?: string;
+  url?: string;
+  dest?: string | unknown[];
+};
+
+type PdfJsPageRef = { num: number; gen: number };
+
+const LINK_DESTINATION_MODES = new Set<LinkDestinationMode>([
+  "XYZ", "Fit", "FitH", "FitV", "FitR", "FitB", "FitBH", "FitBV",
+]);
+
+const linkDestinationDetails = (destination: unknown[]) => {
+  const rawMode = destination[1];
+  const mode = typeof rawMode === "string"
+    ? rawMode.replace(/^\//, "")
+    : rawMode && typeof rawMode === "object" && "name" in rawMode
+      ? String(rawMode.name).replace(/^\//, "")
+      : "Fit";
+  const normalizedMode = LINK_DESTINATION_MODES.has(mode as LinkDestinationMode)
+    ? mode as LinkDestinationMode
+    : "Fit";
+  return {
+    mode: normalizedMode,
+    parameters: destination.slice(2).map((value) =>
+      typeof value === "number" && Number.isFinite(value) ? value : null,
+    ),
+  };
+};
 
 export default function PdfEditor() {
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
@@ -251,7 +283,48 @@ export default function PdfEditor() {
         Array.from({ length: document.numPages }, async (_, sourceIndex) => {
           const pdfPage = await document.getPage(sourceIndex + 1);
           const viewport = pdfPage.getViewport({ scale: 1, rotation: 0 });
-          const annotations = await pdfPage.getAnnotations();
+          const annotations = await pdfPage.getAnnotations({ intent: "any" }) as PdfJsAnnotation[];
+          const linkAnnotations = annotations.filter((annotation) =>
+            annotation.annotationType === pdfjs.AnnotationType.LINK || annotation.subtype === "Link",
+          );
+          const links = await Promise.all(linkAnnotations.map(async (annotation) => {
+            const internal = !annotation.url && annotation.dest !== undefined;
+            if (!internal) return { internal: false };
+
+            try {
+              const destination = typeof annotation.dest === "string"
+                ? await document.getDestination(annotation.dest)
+                : annotation.dest;
+              const destinationDetails = Array.isArray(destination)
+                ? linkDestinationDetails(destination)
+                : undefined;
+              const target = Array.isArray(destination) ? destination[0] : undefined;
+              if (typeof target === "number" && Number.isInteger(target)) {
+                return {
+                  internal: true,
+                  targetSourceIndex: target,
+                  destination: destinationDetails,
+                };
+              }
+              if (
+                target
+                && typeof target === "object"
+                && "num" in target
+                && "gen" in target
+              ) {
+                const targetSourceIndex = await document.getPageIndex(target as PdfJsPageRef);
+                return {
+                  internal: true,
+                  targetSourceIndex,
+                  destination: destinationDetails,
+                };
+              }
+              return { internal: true, destination: destinationDetails };
+            } catch (linkError) {
+              console.warn("Could not resolve an internal PDF link", linkError);
+            }
+            return { internal: true };
+          }));
           return {
             id: uid("page"),
             sourceIndex,
@@ -259,7 +332,10 @@ export default function PdfEditor() {
             height: viewport.height,
             originalRotation: pdfPage.rotate,
             rotation: 0,
-            hasAnnotations: annotations.length > 0,
+            hasFormFields: annotations.some((annotation) =>
+              annotation.annotationType === pdfjs.AnnotationType.WIDGET || annotation.subtype === "Widget",
+            ),
+            links,
             spaces: [],
           } satisfies EditorPage;
         }),
@@ -299,8 +375,8 @@ export default function PdfEditor() {
   const placeElement = (page: EditorPage, point: Point) => {
     const size = pageDisplaySize(page);
     if (tool === "space") {
-      if (page.hasAnnotations) {
-        setNotice("Space is unavailable on pages with links or form fields, so those controls are not damaged.");
+      if (page.hasFormFields) {
+        setNotice("This page contains interactive form fields. Fill or flatten the form before inserting Space.");
         setTool("select");
         return;
       }
