@@ -296,8 +296,25 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .pdf-page.tool-draw { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='8' cy='8' r='3' fill='%232f6f55'/%3E%3C/svg%3E") 8 8, crosshair; }
 .editor-element { position: absolute; touch-action: none; user-select: none; }
 .editor-element.is-selected { outline: 1.5px solid var(--brand); outline-offset: 2px; }
+.editor-element.is-editing { cursor: text; user-select: text; }
 .editor-element.is-selected::before { background: var(--brand); border-radius: 50%; content: ""; height: 6px; left: -5px; position: absolute; top: -5px; width: 6px; }
+.editor-element.is-editing::before { display: none; }
 .rendered-text { height: 100%; line-height: 1.22; overflow: hidden; pointer-events: none; white-space: pre-wrap; width: 100%; }
+.rendered-text.is-empty { color: var(--brand) !important; font-family: inherit !important; font-size: 11px !important; font-style: italic; opacity: .72; }
+.inline-text-editor {
+  background: rgba(255, 255, 255, .92);
+  border: 0;
+  border-radius: 1px;
+  height: 100%;
+  line-height: 1.22;
+  margin: 0;
+  outline: 0 !important;
+  overflow: hidden;
+  padding: 0;
+  resize: none;
+  white-space: pre-wrap;
+  width: 100%;
+}
 .element-image img, .element-signature img { height: 100%; object-fit: contain; pointer-events: none; width: 100%; }
 .element-draw svg, .element-highlight span, .element-redact span { display: block; height: 100%; pointer-events: none; width: 100%; }
 .resize-handle { background: white; border: 2px solid var(--brand); border-radius: 50%; bottom: -7px; cursor: nwse-resize; height: 13px; padding: 0; position: absolute; right: -7px; width: 13px; }

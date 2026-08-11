@@ -29,6 +29,7 @@ export default function PdfEditor() {
   const [elements, setElements] = useState<EditorElement[]>([]);
   const [activePageId, setActivePageId] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [tool, setTool] = useState<EditorTool>("select");
   const [zoom, setZoom] = useState(1);
   const [past, setPast] = useState<EditorSnapshot[]>([]);
@@ -62,6 +63,7 @@ export default function PdfEditor() {
     setPages(value.pages);
     setElements(value.elements);
     setSelectedId(null);
+    setEditingTextId(null);
     if (!value.pages.some(({ id }) => id === activePageId)) {
       setActivePageId(value.pages[0]?.id ?? "");
     }
@@ -98,7 +100,9 @@ export default function PdfEditor() {
         pushHistory();
         setElements((items) => items.filter(({ id }) => id !== selectedId));
         setSelectedId(null);
+        setEditingTextId(null);
       } else if (event.key === "Escape") {
+        setEditingTextId(null);
         setSelectedId(null);
         setTool("select");
       }
@@ -178,6 +182,7 @@ export default function PdfEditor() {
       setPast([]);
       setFuture([]);
       setSelectedId(null);
+      setEditingTextId(null);
       setActivePageId(loadedPages[0]?.id ?? "");
       setTool("select");
       setZoom(1);
@@ -190,10 +195,11 @@ export default function PdfEditor() {
     }
   };
 
-  const addElement = (element: EditorElement) => {
+  const addElement = (element: EditorElement, startTextEditing = false) => {
     pushHistory();
     setElements((items) => [...items, element]);
     setSelectedId(element.id);
+    setEditingTextId(startTextEditing ? element.id : null);
     setTool("select");
   };
 
@@ -201,12 +207,14 @@ export default function PdfEditor() {
     const totalRotation = page.originalRotation + page.rotation;
     const size = displaySize(page.width, page.height, totalRotation);
     if (tool === "text") {
-      addElement({
+      const textElement: EditorElement = {
         id: uid("text"), pageId: page.id, type: "text",
-        x: Math.min(point.x, size.width - 190), y: Math.min(point.y, size.height - 52),
-        width: 190, height: 52, opacity: 1, text: "Type something…",
+        x: Math.max(0, Math.min(point.x, size.width - 190)),
+        y: Math.max(0, Math.min(point.y, size.height - 52)),
+        width: 190, height: 52, opacity: 1, text: "",
         fontSize: 18, fontFamily: "Helvetica", color: "#17211b", bold: false, align: "left",
-      });
+      };
+      addElement(textElement, true);
     } else if (tool === "highlight") {
       addElement({
         id: uid("highlight"), pageId: page.id, type: "highlight",
@@ -262,6 +270,7 @@ export default function PdfEditor() {
     pushHistory();
     setElements((items) => items.filter(({ id }) => id !== selectedId));
     setSelectedId(null);
+    setEditingTextId(null);
   };
 
   const duplicateSelected = () => {
@@ -382,7 +391,7 @@ export default function PdfEditor() {
         canUndo={past.length > 0}
         canRedo={future.length > 0}
         exporting={exporting}
-        onTool={(next) => { setTool(next); setSelectedId(null); }}
+        onTool={(next) => { setTool(next); setSelectedId(null); setEditingTextId(null); }}
         onUndo={undo}
         onRedo={redo}
         onZoom={setZoom}
@@ -415,8 +424,19 @@ export default function PdfEditor() {
                   tool={tool}
                   elements={elements.filter(({ pageId }) => pageId === page.id)}
                   selectedId={selectedId}
+                  editingTextId={editingTextId}
                   onActivate={() => setActivePageId(page.id)}
-                  onSelect={(id) => setSelectedId(id)}
+                  onSelect={(id) => {
+                    setSelectedId(id);
+                    if (id !== editingTextId) setEditingTextId(null);
+                  }}
+                  onStartTextEditing={(id) => {
+                    if (editingTextId === id) return;
+                    pushHistory();
+                    setSelectedId(id);
+                    setEditingTextId(id);
+                  }}
+                  onFinishTextEditing={() => setEditingTextId(null)}
                   onBeginMutation={pushHistory}
                   onUpdate={updateElement}
                   onPlace={(point) => placeElement(page, point)}
