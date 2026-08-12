@@ -13,6 +13,7 @@ import {
   basePageDisplaySize,
   clamp,
   cloneSnapshot,
+  lineGeometryFromMetrics,
   pageDisplaySize,
   spaceAtVisualY,
   spaceVisualTop,
@@ -45,6 +46,35 @@ const elementVerticalBounds = (element: EditorElement) => {
   const bottom = Math.max(startY, endY);
   return { top, bottom, height: bottom - top };
 };
+
+const fitElementToPage = (
+  element: EditorElement,
+  pageWidth: number,
+  pageHeight: number,
+): EditorElement => {
+  const horizontalScale = element.width > 0 ? pageWidth / element.width : 1;
+  const verticalScale = element.height > 0 ? pageHeight / element.height : 1;
+  const scale = Math.min(1, horizontalScale, verticalScale);
+  const fitted = {
+    ...structuredClone(element),
+    width: element.width * scale,
+    height: element.height * scale,
+  } as EditorElement;
+  if (fitted.type === "draw") {
+    return {
+      ...fitted,
+      points: fitted.points.map((point) => ({ x: point.x * scale, y: point.y * scale })),
+    };
+  }
+  if (fitted.type === "text") {
+    return { ...fitted, fontSize: Math.max(0.1, fitted.fontSize * scale) };
+  }
+  return fitted;
+};
+
+type EditorClipboard =
+  | { kind: "element"; element: EditorElement }
+  | { kind: "space"; pageId: string; space: SpaceBand };
 
 type PdfJsAnnotation = {
   annotationType?: number;
@@ -99,6 +129,11 @@ export default function PdfEditor() {
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
   const pagesRef = useRef(pages);
   const elementsRef = useRef(elements);
+  const clipboardRef = useRef<EditorClipboard | null>(null);
+  const pasteSequenceRef = useRef<{ pageId: string | null; count: number }>({
+    pageId: null,
+    count: 0,
+  });
 
   useEffect(() => { pagesRef.current = pages; }, [pages]);
   useEffect(() => { elementsRef.current = elements; }, [elements]);
@@ -222,14 +257,122 @@ export default function PdfEditor() {
     setElements(nextElements);
   }, []);
 
+  const copySelected = useCallback(() => {
+    if (!selection) return false;
+    if (selection.kind === "element") {
+      const element = elementsRef.current.find(({ id }) => id === selection.id);
+      if (!element) return false;
+      clipboardRef.current = { kind: "element", element: structuredClone(element) };
+      setNotice("Element copied — press Ctrl/Cmd+V to paste");
+    } else {
+      const page = pagesRef.current.find(({ id }) => id === selection.pageId);
+      const space = page?.spaces.find(({ id }) => id === selection.id);
+      if (!page || !space) return false;
+      clipboardRef.current = {
+        kind: "space",
+        pageId: page.id,
+        space: structuredClone(space),
+      };
+      setNotice("Blank space copied — press Ctrl/Cmd+V to paste");
+    }
+    pasteSequenceRef.current = { pageId: null, count: 0 };
+    return true;
+  }, [selection]);
+
+  const pasteClipboard = useCallback(() => {
+    const payload = clipboardRef.current;
+    if (!payload) return false;
+    const sourcePageId = payload.kind === "element" ? payload.element.pageId : payload.pageId;
+    const targetPage = pagesRef.current.find(({ id }) => id === activePageId)
+      ?? pagesRef.current.find(({ id }) => id === sourcePageId)
+      ?? pagesRef.current[0];
+    if (!targetPage) return false;
+
+    const sequence = pasteSequenceRef.current.pageId === targetPage.id
+      ? pasteSequenceRef.current.count + 1
+      : 1;
+    const offset = sequence * 14;
+
+    if (payload.kind === "element") {
+      const size = pageDisplaySize(targetPage);
+      const original = payload.element;
+      const fitted = fitElementToPage(original, size.width, size.height);
+      const pasted = {
+        ...fitted,
+        id: uid(original.type),
+        pageId: targetPage.id,
+        x: clamp(original.x + offset, 0, Math.max(0, size.width - fitted.width)),
+        y: clamp(original.y + offset, 0, Math.max(0, size.height - fitted.height)),
+      } as EditorElement;
+      pushHistory();
+      const nextElements = [...elementsRef.current, pasted];
+      elementsRef.current = nextElements;
+      setElements(nextElements);
+      setSelection({ kind: "element", id: pasted.id });
+      setEditingTextId(null);
+      setTool("select");
+      setActivePageId(targetPage.id);
+      setNotice("Element pasted");
+    } else {
+      if (targetPage.hasFormFields) {
+        setNotice("This page contains interactive form fields. Fill or flatten the form before pasting Space.");
+        return true;
+      }
+      const base = basePageDisplaySize(targetPage);
+      const pastedSpace: SpaceBand = {
+        ...structuredClone(payload.space),
+        id: uid("space"),
+        sourceY: clamp(payload.space.sourceY + offset, 0, base.height),
+        height: clamp(payload.space.height, MIN_SPACE_HEIGHT, base.height),
+      };
+      const nextTargetPage = {
+        ...targetPage,
+        spaces: [...targetPage.spaces, pastedSpace],
+      };
+      const insertionTop = spaceVisualTop(nextTargetPage, pastedSpace);
+      const nextPages = pagesRef.current.map((page) =>
+        page.id === targetPage.id ? nextTargetPage : page,
+      );
+      const nextElements = elementsRef.current.map((element) =>
+        element.pageId === targetPage.id && elementVerticalBounds(element).top >= insertionTop
+          ? { ...element, y: element.y + pastedSpace.height } as EditorElement
+          : element,
+      );
+      pushHistory();
+      pagesRef.current = nextPages;
+      elementsRef.current = nextElements;
+      setPages(nextPages);
+      setElements(nextElements);
+      setSelection({ kind: "space", pageId: targetPage.id, id: pastedSpace.id });
+      setEditingTextId(null);
+      setTool("select");
+      setActivePageId(targetPage.id);
+      setNotice("Blank space pasted");
+    }
+
+    pasteSequenceRef.current = { pageId: targetPage.id, count: sequence };
+    return true;
+  }, [activePageId, pushHistory]);
+
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      const editingField = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+      const editingField = Boolean(
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable,
+      );
+      const shortcut = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (shortcut && key === "c" && !editingField) {
+        if (copySelected()) event.preventDefault();
+      } else if (shortcut && key === "v" && !editingField) {
+        if (pasteClipboard()) event.preventDefault();
+      } else if (shortcut && key === "z") {
         event.preventDefault();
         if (event.shiftKey) redo(); else undo();
-      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+      } else if (shortcut && key === "y") {
         event.preventDefault();
         redo();
       } else if (!editingField && (event.key === "Delete" || event.key === "Backspace") && selection) {
@@ -250,7 +393,7 @@ export default function PdfEditor() {
     };
     window.addEventListener("keydown", handleKeyboard);
     return () => window.removeEventListener("keydown", handleKeyboard);
-  }, [pushHistory, redo, removeSpace, selection, undo]);
+  }, [copySelected, pasteClipboard, pushHistory, redo, removeSpace, selection, undo]);
 
   useEffect(() => {
     const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
@@ -371,6 +514,8 @@ export default function PdfEditor() {
       setFuture([]);
       setSelection(null);
       setEditingTextId(null);
+      clipboardRef.current = null;
+      pasteSequenceRef.current = { pageId: null, count: 0 };
       setActivePageId(loadedPages[0]?.id ?? "");
       setTool("select");
       setZoom(1);
@@ -615,6 +760,12 @@ export default function PdfEditor() {
   const selectedElement = selection?.kind === "element"
     ? elements.find(({ id }) => id === selection.id)
     : undefined;
+  const selectedElementPage = selectedElement
+    ? pages.find(({ id }) => id === selectedElement.pageId)
+    : undefined;
+  const selectedElementPageSize = selectedElementPage
+    ? pageDisplaySize(selectedElementPage)
+    : undefined;
   const selectedSpacePage = selection?.kind === "space"
     ? pages.find(({ id }) => id === selection.pageId)
     : undefined;
@@ -682,10 +833,12 @@ export default function PdfEditor() {
                   editingTextId={editingTextId}
                   onActivate={() => setActivePageId(page.id)}
                   onSelectElement={(id) => {
+                    setActivePageId(page.id);
                     setSelection(id ? { kind: "element", id } : null);
                     if (id !== editingTextId) setEditingTextId(null);
                   }}
                   onSelectSpace={(id) => {
+                    setActivePageId(page.id);
                     setSelection({ kind: "space", pageId: page.id, id });
                     setEditingTextId(null);
                   }}
@@ -720,10 +873,26 @@ export default function PdfEditor() {
           spaceTop={selectedSpace && selectedSpacePage ? spaceVisualTop(selectedSpacePage, selectedSpace) : undefined}
           onBeginChange={pushHistory}
           onChange={(patch) => selection?.kind === "element" && updateElement(selection.id, patch)}
+          onLineMetricsChange={(angle, length) => {
+            if (
+              selection?.kind !== "element"
+              || selectedElement?.type !== "line"
+              || !selectedElementPageSize
+            ) return;
+            const geometry = lineGeometryFromMetrics(
+              selectedElement,
+              angle,
+              length,
+              selectedElementPageSize.width,
+              selectedElementPageSize.height,
+            );
+            updateElement(selection.id, geometry as Partial<EditorElement>);
+          }}
           onSpaceHeightChange={(height) => {
             if (selection?.kind === "space") updateSpaceHeight(selection.pageId, selection.id, height);
           }}
           onDelete={deleteSelected}
+          onCopy={() => { copySelected(); }}
           onDuplicate={duplicateSelected}
         />
       </div>

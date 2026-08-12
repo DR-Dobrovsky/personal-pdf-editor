@@ -13,55 +13,13 @@ import type {
 import {
   basePageDisplaySize,
   clamp,
+  lineGeometry,
   orderedSpaces,
   pageDisplaySize,
+  snapLineEndpoint,
   spaceVisualTop,
 } from "@/lib/editor-utils";
-
-interface LineGeometry {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  start: Point;
-  end: Point;
-}
-
-const MIN_LINE_BOX = 12;
-
-const lineGeometry = (
-  start: Point,
-  end: Point,
-  pageWidth: number,
-  pageHeight: number,
-): LineGeometry => {
-  const axis = (first: number, second: number, limit: number) => {
-    const minimum = Math.min(first, second);
-    const maximum = Math.max(first, second);
-    const range = maximum - minimum;
-    if (range >= MIN_LINE_BOX) return { origin: minimum, size: range };
-    const size = Math.min(MIN_LINE_BOX, limit);
-    const center = (first + second) / 2;
-    return {
-      origin: clamp(center - size / 2, 0, Math.max(0, limit - size)),
-      size,
-    };
-  };
-  const horizontal = axis(start.x, end.x, pageWidth);
-  const vertical = axis(start.y, end.y, pageHeight);
-  const normalize = (point: Point): Point => ({
-    x: clamp((point.x - horizontal.origin) / horizontal.size, 0, 1),
-    y: clamp((point.y - vertical.origin) / vertical.size, 0, 1),
-  });
-  return {
-    x: horizontal.origin,
-    y: vertical.origin,
-    width: horizontal.size,
-    height: vertical.size,
-    start: normalize(start),
-    end: normalize(end),
-  };
-};
+import type { LineGeometry } from "@/lib/editor-utils";
 
 interface PdfPageProps {
   document: PDFDocumentProxy;
@@ -270,9 +228,13 @@ export default function PdfPage({
         }}
         onPointerMove={(event) => {
           if (tool === "line" && lineDraftRef.current) {
+            const end = snapLineEndpoint(
+              lineDraftRef.current.start,
+              relativePoint(event),
+            );
             lineDraftRef.current = {
               start: lineDraftRef.current.start,
-              end: relativePoint(event),
+              end,
             };
             setLineDraft(lineDraftRef.current);
             return;
@@ -287,7 +249,7 @@ export default function PdfPage({
         onPointerUp={(event) => {
           if (lineDraftRef.current) {
             const start = lineDraftRef.current.start;
-            const end = relativePoint(event);
+            const end = snapLineEndpoint(start, relativePoint(event));
             if (Math.hypot(end.x - start.x, end.y - start.y) >= 2) {
               onLine(lineGeometry(start, end, size.width, size.height));
             }
@@ -690,7 +652,7 @@ function LineContent({
           x2={end.x}
           y2={end.y}
           stroke={element.color}
-          strokeWidth={Math.max(1, element.strokeWidth * zoom)}
+          strokeWidth={Math.max(0.1, element.strokeWidth) * zoom}
           strokeLinecap="round"
           vectorEffect="non-scaling-stroke"
         />
@@ -770,7 +732,7 @@ function LineEndpointHandle({
           interaction.started = true;
           onBeginMutation();
         }
-        const moving = {
+        const moving = snapLineEndpoint(interaction.fixed, {
           x: clamp(
             interaction.moving.x + (event.clientX - interaction.pointerX) / zoom,
             0,
@@ -781,7 +743,7 @@ function LineEndpointHandle({
             0,
             pageHeight,
           ),
-        };
+        });
         onUpdate(
           (endpoint === "start"
             ? lineGeometry(moving, interaction.fixed, pageWidth, pageHeight)
