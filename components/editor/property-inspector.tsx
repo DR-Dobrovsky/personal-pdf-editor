@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { AlignCenter, AlignLeft, AlignRight, Copy, Trash2 } from "lucide-react";
-import type { EditorElement, SpaceBand } from "@/types/editor";
+import { lineMetrics } from "@/lib/editor-utils";
+import type { EditorElement, LineElement, SpaceBand } from "@/types/editor";
 
 interface PropertyInspectorProps {
   element?: EditorElement;
@@ -9,8 +11,10 @@ interface PropertyInspectorProps {
   spaceTop?: number;
   onBeginChange: () => void;
   onChange: (patch: Partial<EditorElement>) => void;
+  onLineMetricsChange: (angle: number, length: number) => void;
   onSpaceHeightChange: (height: number) => void;
   onDelete: () => void;
+  onCopy: () => void;
   onDuplicate: () => void;
 }
 
@@ -20,8 +24,10 @@ export default function PropertyInspector({
   spaceTop,
   onBeginChange,
   onChange,
+  onLineMetricsChange,
   onSpaceHeightChange,
   onDelete,
+  onCopy,
   onDuplicate,
 }: PropertyInspectorProps) {
   if (!element && !space) {
@@ -43,6 +49,7 @@ export default function PropertyInspector({
             <h3>Blank space</h3>
           </div>
           <div className="mini-actions">
+            <button onClick={onCopy} title="Copy blank space"><Copy size={16} /></button>
             <button className="danger-icon" onClick={onDelete} title="Delete"><Trash2 size={16} /></button>
           </div>
         </div>
@@ -143,18 +150,29 @@ export default function PropertyInspector({
             <span>Thickness</span>
             <input
               type="number"
-              min={1}
+              min={element.type === "line" ? 0.1 : 1}
               max={20}
+              step={element.type === "line" ? 0.1 : 1}
               value={element.strokeWidth}
               onChange={(event) => {
                 const value = Number(event.target.value);
                 if (Number.isFinite(value)) {
-                  fieldChange({ strokeWidth: Math.min(20, Math.max(1, value)) } as Partial<EditorElement>);
+                  const minimum = element.type === "line" ? 0.1 : 1;
+                  fieldChange({ strokeWidth: Math.min(20, Math.max(minimum, value)) } as Partial<EditorElement>);
                 }
               }}
             />
           </label>
         </div>
+      )}
+
+      {element.type === "line" && (
+        <LineMetricControls
+          key={element.id}
+          element={element}
+          onBeginChange={onBeginChange}
+          onChange={onLineMetricsChange}
+        />
       )}
 
       {(element.type === "highlight" || element.type === "redact") && (
@@ -175,9 +193,103 @@ export default function PropertyInspector({
 
       <p className="inspector-tip">
         {element.type === "line"
-          ? "Tip: drag either endpoint to change the line’s length and angle."
+          ? "Set an exact angle and length, use a straight preset, or drag an endpoint. Near-horizontal and near-vertical lines snap perfectly straight."
           : "Tip: drag the corner handle to resize this item."}
       </p>
     </aside>
+  );
+}
+
+
+const formatMetric = (value: number) => String(Number(value.toFixed(1)));
+
+function LineMetricControls({
+  element,
+  onBeginChange,
+  onChange,
+}: {
+  element: LineElement;
+  onBeginChange: () => void;
+  onChange: (angle: number, length: number) => void;
+}) {
+  const metrics = lineMetrics(element);
+  const [angleDraft, setAngleDraft] = useState<string | null>(null);
+  const [lengthDraft, setLengthDraft] = useState<string | null>(null);
+
+  const updateAngle = (value: string) => {
+    setAngleDraft(value);
+    if (!value.trim() || value.trim() === "-") return;
+    const angle = Number(value);
+    if (Number.isFinite(angle)) onChange(angle, metrics.length);
+  };
+
+  const updateLength = (value: string) => {
+    setLengthDraft(value);
+    if (!value.trim()) return;
+    const length = Number(value);
+    if (Number.isFinite(length) && length > 0) onChange(metrics.angle, length);
+  };
+
+  return (
+    <>
+      <div className="field-grid dimensions-grid">
+        <label>
+          <span>Angle (degrees)</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={angleDraft ?? formatMetric(metrics.angle)}
+            onFocus={() => {
+              setAngleDraft(formatMetric(metrics.angle));
+              onBeginChange();
+            }}
+            onChange={(event) => updateAngle(event.target.value)}
+            onBlur={() => setAngleDraft(null)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") {
+                setAngleDraft(null);
+                event.currentTarget.blur();
+              }
+            }}
+          />
+        </label>
+        <label>
+          <span>Length</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={lengthDraft ?? formatMetric(metrics.length)}
+            onFocus={() => {
+              setLengthDraft(formatMetric(metrics.length));
+              onBeginChange();
+            }}
+            onChange={(event) => updateLength(event.target.value)}
+            onBlur={() => setLengthDraft(null)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") {
+                setLengthDraft(null);
+                event.currentTarget.blur();
+              }
+            }}
+          />
+        </label>
+      </div>
+      <div className="line-angle-presets" aria-label="Perfectly straight line angles">
+        <button
+          type="button"
+          onClick={() => { onBeginChange(); onChange(0, metrics.length); }}
+        >
+          Horizontal 0°
+        </button>
+        <button
+          type="button"
+          onClick={() => { onBeginChange(); onChange(90, metrics.length); }}
+        >
+          Vertical 90°
+        </button>
+      </div>
+    </>
   );
 }
