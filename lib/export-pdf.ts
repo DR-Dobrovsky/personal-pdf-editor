@@ -8,7 +8,12 @@ import {
   type PDFObject,
   type PDFRef,
   StandardFonts,
+  clip,
   degrees,
+  endPath,
+  popGraphicsState,
+  pushGraphicsState,
+  rectangle,
   rgb,
   type PDFPage,
   type PDFFont,
@@ -112,6 +117,25 @@ const elementBoundsInPdf = (
   };
 };
 
+const textLineLayout = (
+  text: string,
+  font: PDFFont,
+  fontSize: number,
+) => {
+  const tabWidth = font.widthOfTextAtSize(" ", fontSize) * 8;
+  let width = 0;
+  const values = text.split("\t");
+  const segments = values.map((value, index) => {
+    const segment = { text: value, x: width };
+    width += font.widthOfTextAtSize(value, fontSize);
+    if (index < values.length - 1) {
+      width = (Math.floor(width / tabWidth) + 1) * tabWidth;
+    }
+    return segment;
+  });
+  return { segments, width };
+};
+
 const wrapText = (
   text: string,
   font: PDFFont,
@@ -119,20 +143,23 @@ const wrapText = (
   maxWidth: number,
 ) => {
   const lines: string[] = [];
-  for (const paragraph of text.split("\n")) {
-    const words = paragraph.split(/\s+/).filter(Boolean);
-    if (!words.length) {
+  const textWidth = (value: string) => textLineLayout(value, font, fontSize).width;
+
+  for (const rawParagraph of text.replace(/\r\n?/g, "\n").split("\n")) {
+    if (!rawParagraph) {
       lines.push("");
       continue;
     }
-    let line = words[0];
-    for (const word of words.slice(1)) {
-      const candidate = `${line} ${word}`;
-      if (font.widthOfTextAtSize(candidate, fontSize) <= maxWidth) {
-        line = candidate;
-      } else {
+
+    const tokens = rawParagraph.match(/\t|[^\S\t]+|\S+/g) ?? [];
+    let line = "";
+    for (const token of tokens) {
+      const whitespace = /^\s+$/.test(token);
+      if (!whitespace && line.trim() && textWidth(line + token) > maxWidth) {
         lines.push(line);
-        line = word;
+        line = token;
+      } else {
+        line += token;
       }
     }
     lines.push(line);
@@ -162,25 +189,35 @@ const drawTextElement = async (
   const lines = wrapText(element.text, font, element.fontSize, bounds.width);
   const lineHeight = element.fontSize * 1.22;
 
+  outputPage.pushOperators(
+    pushGraphicsState(),
+    rectangle(bounds.x, bounds.y, bounds.width, bounds.height),
+    clip(),
+    endPath(),
+  );
   lines.slice(0, Math.max(1, Math.floor(bounds.height / lineHeight))).forEach(
     (line, index) => {
-      const textWidth = font.widthOfTextAtSize(line, element.fontSize);
+      const layout = textLineLayout(line, font, element.fontSize);
       const offset =
         element.align === "center"
-          ? (bounds.width - textWidth) / 2
+          ? (bounds.width - layout.width) / 2
           : element.align === "right"
-            ? bounds.width - textWidth
+            ? bounds.width - layout.width
             : 0;
-      outputPage.drawText(line, {
-        x: bounds.x + Math.max(0, offset),
-        y: bounds.y + bounds.height - element.fontSize - index * lineHeight,
-        size: element.fontSize,
-        font,
-        color: hexToRgb(element.color),
-        opacity: element.opacity,
-      });
+      for (const segment of layout.segments) {
+        if (!segment.text) continue;
+        outputPage.drawText(segment.text, {
+          x: bounds.x + Math.max(0, offset) + segment.x,
+          y: bounds.y + bounds.height - element.fontSize - index * lineHeight,
+          size: element.fontSize,
+          font,
+          color: hexToRgb(element.color),
+          opacity: element.opacity,
+        });
+      }
     },
   );
+  outputPage.pushOperators(popGraphicsState());
 };
 
 const dataUrlBytes = (src: string) => {
