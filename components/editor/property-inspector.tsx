@@ -120,7 +120,20 @@ export default function PropertyInspector({
             </label>
             <label>
               <span>Size</span>
-              <input type="number" min={6} max={96} value={element.fontSize} onChange={(event) => fieldChange({ fontSize: Number(event.target.value) } as Partial<EditorElement>)} />
+              <input
+                type="number"
+                min={2}
+                max={96}
+                value={element.fontSize}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isFinite(value)) {
+                    fieldChange({
+                      fontSize: Math.min(96, Math.max(2, value)),
+                    } as Partial<EditorElement>);
+                  }
+                }}
+              />
             </label>
           </div>
           <div className="field-row">
