@@ -117,6 +117,7 @@ export default function PdfEditor() {
   const [selection, setSelection] = useState<EditorSelection>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [tool, setTool] = useState<EditorTool>("select");
+  const [guidesEnabled, setGuidesEnabled] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [past, setPast] = useState<EditorSnapshot[]>([]);
   const [future, setFuture] = useState<EditorSnapshot[]>([]);
@@ -582,13 +583,13 @@ export default function PdfEditor() {
     } else if (tool === "highlight") {
       addElement({
         id: uid("highlight"), pageId: page.id, type: "highlight",
-        x: Math.min(point.x, size.width - 160), y: Math.min(point.y, size.height - 32),
+        x: Math.max(0, Math.min(point.x, size.width - 160)), y: Math.max(0, Math.min(point.y, size.height - 32)),
         width: 160, height: 32, opacity: 0.38, color: "#f4d35e",
       });
     } else if (tool === "redact") {
       addElement({
         id: uid("redact"), pageId: page.id, type: "redact",
-        x: Math.min(point.x, size.width - 160), y: Math.min(point.y, size.height - 32),
+        x: Math.max(0, Math.min(point.x, size.width - 160)), y: Math.max(0, Math.min(point.y, size.height - 32)),
         width: 160, height: 32, opacity: 1, color: "#17211b",
       });
     }
@@ -796,12 +797,22 @@ export default function PdfEditor() {
         canUndo={past.length > 0}
         canRedo={future.length > 0}
         exporting={exporting}
+        guidesEnabled={guidesEnabled}
         onTool={(next) => { setTool(next); setSelection(null); setEditingTextId(null); }}
         onUndo={undo}
         onRedo={redo}
         onZoom={setZoom}
         onImage={addImageFile}
         onSignature={() => setSignatureOpen(true)}
+        onToggleGuides={() => {
+          setGuidesEnabled((enabled) => {
+            const next = !enabled;
+            setNotice(next
+              ? "Guides and 6 pt snapping are on. Hold Alt while dragging to move freely."
+              : "Alignment guides are off");
+            return next;
+          });
+        }}
         onExport={() => void downloadPdf()}
       />
 
@@ -827,6 +838,7 @@ export default function PdfEditor() {
                   pageNumber={index + 1}
                   zoom={zoom}
                   tool={tool}
+                  guidesEnabled={guidesEnabled}
                   elements={elements.filter(({ pageId }) => pageId === page.id)}
                   selectedElementId={selection?.kind === "element" ? selection.id : null}
                   selectedSpaceId={selection?.kind === "space" && selection.pageId === page.id ? selection.id : null}

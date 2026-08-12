@@ -290,8 +290,60 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .document-stack { align-items: center; display: flex; flex-direction: column; gap: 36px; min-width: min-content; padding: 44px 48px 90px; }
 .page-stage { align-items: center; display: flex; flex-direction: column; position: relative; }
 .pdf-page { background: white; box-shadow: 0 7px 26px rgba(35, 46, 39, .16); position: relative; touch-action: none; }
-.pdf-canvas { display: block; inset: 0; position: absolute; }
-.space-layer { inset: 0; pointer-events: none; position: absolute; }
+.pdf-canvas { display: block; inset: 0; position: absolute; z-index: 0; }
+.alignment-grid-layer, .alignment-grid-layer > span, .alignment-ruler, .alignment-cursor-layer { inset: 0; pointer-events: none; position: absolute; }
+.alignment-grid-layer { overflow: hidden; z-index: 1; }
+.alignment-grid-minor {
+  background-image:
+    linear-gradient(rgba(47, 111, 85, .09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(47, 111, 85, .09) 1px, transparent 1px);
+}
+.alignment-grid-major {
+  background-image:
+    linear-gradient(rgba(47, 111, 85, .2) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(47, 111, 85, .2) 1px, transparent 1px);
+}
+.alignment-grid-layer.hide-minor .alignment-grid-minor { display: none; }
+.alignment-ruler {
+  background-color: rgba(248, 247, 242, .9);
+  color: var(--brand-dark);
+  font-size: 7px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  overflow: hidden;
+  z-index: 5;
+}
+.alignment-ruler-horizontal {
+  background-image: linear-gradient(90deg, rgba(47, 111, 85, .45) 1px, transparent 1px);
+  border-bottom: 1px solid rgba(47, 111, 85, .34);
+  bottom: auto;
+  height: 18px;
+}
+.alignment-ruler-vertical {
+  background-image: linear-gradient(rgba(47, 111, 85, .45) 1px, transparent 1px);
+  border-right: 1px solid rgba(47, 111, 85, .34);
+  right: auto;
+  width: 20px;
+}
+.alignment-ruler > span { position: absolute; }
+.alignment-ruler-horizontal > span { top: 7px; transform: translateX(3px); }
+.alignment-ruler-vertical > span { left: 3px; transform: translateY(3px); }
+.alignment-cursor-layer { overflow: hidden; z-index: 6; }
+.alignment-crosshair { border-color: rgba(185, 75, 75, .82); border-style: dashed; position: absolute; }
+.alignment-crosshair.is-vertical { border-left-width: 1px; bottom: 0; top: 0; }
+.alignment-crosshair.is-horizontal { border-top-width: 1px; left: 0; right: 0; }
+.alignment-coordinate {
+  background: rgba(23, 33, 27, .9);
+  border-radius: 5px;
+  color: white;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  padding: 4px 6px;
+  position: absolute;
+  white-space: nowrap;
+}
+.space-layer { inset: 0; pointer-events: none; position: absolute; z-index: 2; }
 .space-band {
   border-bottom: 1px dashed rgba(47, 111, 85, .32);
   border-top: 1px dashed rgba(47, 111, 85, .32);
@@ -328,7 +380,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   transform: translateX(-50%);
   width: 42px;
 }
-.elements-layer { inset: 0; pointer-events: none; position: absolute; }
+.elements-layer { inset: 0; pointer-events: none; position: absolute; z-index: 3; }
 .pdf-page.tool-space, .pdf-page.tool-line, .pdf-page.tool-text, .pdf-page.tool-highlight, .pdf-page.tool-redact { cursor: crosshair; }
 .pdf-page.tool-draw { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='8' cy='8' r='3' fill='%232f6f55'/%3E%3C/svg%3E") 8 8, crosshair; }
 .editor-element { position: absolute; touch-action: none; user-select: none; }
@@ -454,6 +506,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .toast { align-items: center; animation: toast-in .25s ease; background: var(--ink); border-radius: 10px; bottom: 24px; box-shadow: var(--shadow-sm); color: white; display: flex; font-size: 12px; gap: 18px; left: 50%; max-width: calc(100vw - 40px); padding: 11px 12px 11px 16px; position: fixed; transform: translateX(-50%); z-index: 120; }
 .toast button { align-items: center; background: rgba(255,255,255,.12); border: 0; border-radius: 6px; color: white; display: flex; height: 24px; justify-content: center; padding: 0; width: 24px; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } }
+
+@media (hover: none), (pointer: coarse) {
+  .alignment-cursor-layer { display: none; }
+}
 
 @media (max-width: 1050px) {
   .hero { gap: 55px; grid-template-columns: 1fr 390px; }

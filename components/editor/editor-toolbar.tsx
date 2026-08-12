@@ -10,6 +10,7 @@ import {
   PenLine,
   Plus,
   Redo2,
+  Ruler,
   ScanLine,
   Signature,
   Slash,
@@ -24,12 +25,14 @@ interface EditorToolbarProps {
   canUndo: boolean;
   canRedo: boolean;
   exporting: boolean;
+  guidesEnabled: boolean;
   onTool: (tool: EditorTool) => void;
   onUndo: () => void;
   onRedo: () => void;
   onZoom: (zoom: number) => void;
   onImage: (file: File) => void;
   onSignature: () => void;
+  onToggleGuides: () => void;
   onExport: () => void;
 }
 
@@ -49,12 +52,14 @@ export default function EditorToolbar({
   canUndo,
   canRedo,
   exporting,
+  guidesEnabled,
   onTool,
   onUndo,
   onRedo,
   onZoom,
   onImage,
   onSignature,
+  onToggleGuides,
   onExport,
 }: EditorToolbarProps) {
   const imageInput = useRef<HTMLInputElement>(null);
@@ -92,6 +97,16 @@ export default function EditorToolbar({
         />
         <button className="tool-button" title="Add signature" onClick={onSignature}>
           <Signature size={18} /><span>Sign</span>
+        </button>
+        <span className="toolbar-divider" />
+        <button
+          className={`tool-button guides-toggle ${guidesEnabled ? "is-active" : ""}`}
+          title="Alignment guides and 6 pt snapping (not exported)"
+          aria-label="Alignment guides and snapping"
+          aria-pressed={guidesEnabled}
+          onClick={onToggleGuides}
+        >
+          <Ruler size={18} /><span>Guides</span>
         </button>
       </div>
 
