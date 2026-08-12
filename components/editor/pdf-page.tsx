@@ -21,12 +21,30 @@ import {
 } from "@/lib/editor-utils";
 import type { LineGeometry } from "@/lib/editor-utils";
 
+const GUIDE_STEP = 6;
+const GUIDE_MAJOR_STEP = 24;
+
+const snapGuideValue = (value: number) => Math.round(value / GUIDE_STEP) * GUIDE_STEP;
+
+const snapGuideValueWithin = (value: number, minimum: number, maximum: number) => {
+  const lowerGuide = Math.ceil(minimum / GUIDE_STEP) * GUIDE_STEP;
+  const upperGuide = Math.floor(maximum / GUIDE_STEP) * GUIDE_STEP;
+  if (lowerGuide > upperGuide) return clamp(value, minimum, maximum);
+  return clamp(snapGuideValue(value), lowerGuide, upperGuide);
+};
+
+const snapGuidePoint = (point: Point, width: number, height: number): Point => ({
+  x: snapGuideValueWithin(point.x, 0, width),
+  y: snapGuideValueWithin(point.y, 0, height),
+});
+
 interface PdfPageProps {
   document: PDFDocumentProxy;
   page: EditorPage;
   pageNumber: number;
   zoom: number;
   tool: EditorTool;
+  guidesEnabled: boolean;
   elements: EditorElement[];
   selectedElementId: string | null;
   selectedSpaceId: string | null;
@@ -50,6 +68,7 @@ export default function PdfPage({
   pageNumber,
   zoom,
   tool,
+  guidesEnabled,
   elements,
   selectedElementId,
   selectedSpaceId,
@@ -76,6 +95,7 @@ export default function PdfPage({
   const [sourceRenderVersion, setSourceRenderVersion] = useState(0);
   const [draft, setDraft] = useState<Point[] | null>(null);
   const [lineDraft, setLineDraft] = useState<{ start: Point; end: Point } | null>(null);
+  const [guidePoint, setGuidePoint] = useState<Point | null>(null);
   const [pixelRatio, setPixelRatio] = useState(() =>
     typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
   );
@@ -197,6 +217,41 @@ export default function PdfPage({
     };
   };
 
+  const guidedPoint = (
+    event: React.PointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>,
+  ) => {
+    const point = relativePoint(event);
+    if (!guidesEnabled || event.altKey) return point;
+    return snapGuidePoint(point, size.width, size.height);
+  };
+
+  const guidedPlacementPoint = (
+    event: React.PointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>,
+  ) => {
+    const point = relativePoint(event);
+    if (!guidesEnabled || event.altKey) return point;
+    const dimensions = tool === "text"
+      ? { width: 190, height: 52 }
+      : tool === "highlight" || tool === "redact"
+        ? { width: 160, height: 32 }
+        : { width: 0, height: 0 };
+    return {
+      x: snapGuideValueWithin(point.x, 0, Math.max(0, size.width - dimensions.width)),
+      y: snapGuideValueWithin(point.y, 0, Math.max(0, size.height - dimensions.height)),
+    };
+  };
+
+  const guidedLineEndpoint = (
+    start: Point,
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    let end = snapLineEndpoint(start, relativePoint(event));
+    if (guidesEnabled && !event.altKey) {
+      end = snapGuidePoint(end, size.width, size.height);
+    }
+    return end;
+  };
+
   return (
     <section className="page-stage" aria-label={`Page ${pageNumber}`}>
       <div
@@ -211,7 +266,7 @@ export default function PdfPage({
             setDraft([first]);
             event.currentTarget.setPointerCapture(event.pointerId);
           } else if (tool === "line") {
-            const first = relativePoint(event);
+            const first = guidedPoint(event);
             lineDraftRef.current = { start: first, end: first };
             setLineDraft(lineDraftRef.current);
             event.currentTarget.setPointerCapture(event.pointerId);
@@ -223,15 +278,20 @@ export default function PdfPage({
           if (event.target !== event.currentTarget && event.target !== canvasRef.current) return;
           if (tool === "space" || tool === "text" || tool === "highlight" || tool === "redact") {
             onActivate();
-            onPlace(relativePoint(event));
+            onPlace(tool === "space" ? relativePoint(event) : guidedPlacementPoint(event));
           }
         }}
         onPointerMove={(event) => {
-          if (tool === "line" && lineDraftRef.current) {
-            const end = snapLineEndpoint(
-              lineDraftRef.current.start,
-              relativePoint(event),
+          if (guidesEnabled) {
+            setGuidePoint(
+              tool === "text" || tool === "highlight" || tool === "redact"
+                ? guidedPlacementPoint(event)
+                : guidedPoint(event),
             );
+          }
+          if (tool === "line" && lineDraftRef.current) {
+            const end = guidedLineEndpoint(lineDraftRef.current.start, event);
+            if (guidesEnabled) setGuidePoint(end);
             lineDraftRef.current = {
               start: lineDraftRef.current.start,
               end,
@@ -249,7 +309,8 @@ export default function PdfPage({
         onPointerUp={(event) => {
           if (lineDraftRef.current) {
             const start = lineDraftRef.current.start;
-            const end = snapLineEndpoint(start, relativePoint(event));
+            const end = guidedLineEndpoint(start, event);
+            if (guidesEnabled) setGuidePoint(end);
             if (Math.hypot(end.x - start.x, end.y - start.y) >= 2) {
               onLine(lineGeometry(start, end, size.width, size.height));
             }
@@ -278,9 +339,19 @@ export default function PdfPage({
           lineDraftRef.current = null;
           setDraft(null);
           setLineDraft(null);
+          setGuidePoint(null);
         }}
+        onPointerLeave={() => setGuidePoint(null)}
       >
         <canvas ref={canvasRef} className="pdf-canvas" />
+        {guidesEnabled && (
+          <AlignmentGuideLayer
+            width={size.width}
+            height={size.height}
+            zoom={zoom}
+            point={editingTextId ? null : guidePoint}
+          />
+        )}
         <div className="space-layer">
           {orderedSpaces(page).map((space) => (
             <SpaceBandControl
@@ -307,6 +378,8 @@ export default function PdfPage({
               pageWidth={size.width}
               pageHeight={size.height}
               enabled={tool === "select"}
+              snapToGuides={guidesEnabled}
+              onGuidePoint={setGuidePoint}
               onSelect={() => onSelectElement(element.id)}
               onStartTextEditing={() => onStartTextEditing(element.id)}
               onFinishTextEditing={onFinishTextEditing}
@@ -336,6 +409,81 @@ export default function PdfPage({
       </div>
       <span className="page-stage-label">Page {pageNumber}</span>
     </section>
+  );
+}
+
+function AlignmentGuideLayer({
+  width,
+  height,
+  zoom,
+  point,
+}: {
+  width: number;
+  height: number;
+  zoom: number;
+  point: Point | null;
+}) {
+  const labelStep = zoom < 0.75 ? 96 : 48;
+  const horizontalLabels = Array.from(
+    { length: Math.floor(width / labelStep) + 1 },
+    (_, index) => index * labelStep,
+  );
+  const verticalLabels = Array.from(
+    { length: Math.floor(height / labelStep) + 1 },
+    (_, index) => index * labelStep,
+  );
+  const renderedWidth = width * zoom;
+  const renderedHeight = height * zoom;
+  const labelLeft = point
+    ? clamp(point.x * zoom + 9, 22, Math.max(22, renderedWidth - 112))
+    : 0;
+  const labelTop = point
+    ? clamp(point.y * zoom + 9, 22, Math.max(22, renderedHeight - 30))
+    : 0;
+
+  return (
+    <>
+      <div
+        className={`alignment-grid-layer ${zoom < 0.75 ? "hide-minor" : ""}`}
+        aria-hidden="true"
+      >
+        <span
+          className="alignment-grid-minor"
+          style={{ backgroundSize: `${GUIDE_STEP * zoom}px ${GUIDE_STEP * zoom}px` }}
+        />
+        <span
+          className="alignment-grid-major"
+          style={{ backgroundSize: `${GUIDE_MAJOR_STEP * zoom}px ${GUIDE_MAJOR_STEP * zoom}px` }}
+        />
+      </div>
+      <div
+        className="alignment-ruler alignment-ruler-horizontal"
+        style={{ backgroundSize: `${GUIDE_STEP * zoom}px 100%` }}
+        aria-hidden="true"
+      >
+        {horizontalLabels.map((value) => (
+          <span key={value} style={{ left: value * zoom }}>{value}</span>
+        ))}
+      </div>
+      <div
+        className="alignment-ruler alignment-ruler-vertical"
+        style={{ backgroundSize: `100% ${GUIDE_STEP * zoom}px` }}
+        aria-hidden="true"
+      >
+        {verticalLabels.map((value) => (
+          <span key={value} style={{ top: value * zoom }}>{value}</span>
+        ))}
+      </div>
+      {point && (
+        <div className="alignment-cursor-layer" aria-hidden="true">
+          <span className="alignment-crosshair is-vertical" style={{ left: point.x * zoom }} />
+          <span className="alignment-crosshair is-horizontal" style={{ top: point.y * zoom }} />
+          <span className="alignment-coordinate" style={{ left: labelLeft, top: labelTop }}>
+            x {Math.round(point.x)} · y {Math.round(point.y)} pt
+          </span>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -420,6 +568,8 @@ interface EditableElementProps {
   pageWidth: number;
   pageHeight: number;
   enabled: boolean;
+  snapToGuides: boolean;
+  onGuidePoint: (point: Point) => void;
   onSelect: () => void;
   onStartTextEditing: () => void;
   onFinishTextEditing: () => void;
@@ -435,6 +585,8 @@ function EditableElement({
   pageWidth,
   pageHeight,
   enabled,
+  snapToGuides,
+  onGuidePoint,
   onSelect,
   onStartTextEditing,
   onFinishTextEditing,
@@ -446,6 +598,8 @@ function EditableElement({
     pointerY: number;
     x: number;
     y: number;
+    lineStart?: Point;
+    lineEnd?: Point;
     started: boolean;
   } | null>(null);
   const resizeRef = useRef<{
@@ -490,6 +644,18 @@ function EditableElement({
           pointerY: event.clientY,
           x: element.x,
           y: element.y,
+          lineStart: element.type === "line"
+            ? {
+                x: element.x + element.start.x * element.width,
+                y: element.y + element.start.y * element.height,
+              }
+            : undefined,
+          lineEnd: element.type === "line"
+            ? {
+                x: element.x + element.end.x * element.width,
+                y: element.y + element.end.y * element.height,
+              }
+            : undefined,
           started: false,
         };
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -500,9 +666,43 @@ function EditableElement({
           dragRef.current.started = true;
           onBeginMutation();
         }
+        const deltaX = (event.clientX - dragRef.current.pointerX) / zoom;
+        const deltaY = (event.clientY - dragRef.current.pointerY) / zoom;
+        if (element.type === "line" && dragRef.current.lineStart && dragRef.current.lineEnd) {
+          const start = dragRef.current.lineStart;
+          const end = dragRef.current.lineEnd;
+          const minimumStartX = start.x - Math.min(start.x, end.x);
+          const maximumStartX = start.x + pageWidth - Math.max(start.x, end.x);
+          const minimumStartY = start.y - Math.min(start.y, end.y);
+          const maximumStartY = start.y + pageHeight - Math.max(start.y, end.y);
+          const requestedStartX = start.x + deltaX;
+          const requestedStartY = start.y + deltaY;
+          const nextStart = {
+            x: snapToGuides && !event.altKey
+              ? snapGuideValueWithin(requestedStartX, minimumStartX, maximumStartX)
+              : clamp(requestedStartX, minimumStartX, maximumStartX),
+            y: snapToGuides && !event.altKey
+              ? snapGuideValueWithin(requestedStartY, minimumStartY, maximumStartY)
+              : clamp(requestedStartY, minimumStartY, maximumStartY),
+          };
+          const translatedEnd = {
+            x: end.x + nextStart.x - start.x,
+            y: end.y + nextStart.y - start.y,
+          };
+          onUpdate(lineGeometry(nextStart, translatedEnd, pageWidth, pageHeight) as Partial<EditorElement>);
+          return;
+        }
+        const maximumX = Math.max(0, pageWidth - element.width);
+        const maximumY = Math.max(0, pageHeight - element.height);
+        const requestedX = dragRef.current.x + deltaX;
+        const requestedY = dragRef.current.y + deltaY;
         onUpdate({
-          x: clamp(dragRef.current.x + (event.clientX - dragRef.current.pointerX) / zoom, 0, pageWidth - element.width),
-          y: clamp(dragRef.current.y + (event.clientY - dragRef.current.pointerY) / zoom, 0, pageHeight - element.height),
+          x: snapToGuides && !event.altKey
+            ? snapGuideValueWithin(requestedX, 0, maximumX)
+            : clamp(requestedX, 0, maximumX),
+          y: snapToGuides && !event.altKey
+            ? snapGuideValueWithin(requestedY, 0, maximumY)
+            : clamp(requestedY, 0, maximumY),
         } as Partial<EditorElement>);
       }}
       onPointerUp={() => {
@@ -569,6 +769,8 @@ function EditableElement({
             zoom={zoom}
             pageWidth={pageWidth}
             pageHeight={pageHeight}
+            snapToGuides={snapToGuides}
+            onGuidePoint={onGuidePoint}
             onBeginMutation={onBeginMutation}
             onUpdate={onUpdate}
           />
@@ -578,6 +780,8 @@ function EditableElement({
             zoom={zoom}
             pageWidth={pageWidth}
             pageHeight={pageHeight}
+            snapToGuides={snapToGuides}
+            onGuidePoint={onGuidePoint}
             onBeginMutation={onBeginMutation}
             onUpdate={onUpdate}
           />
@@ -679,6 +883,8 @@ interface LineEndpointHandleProps {
   zoom: number;
   pageWidth: number;
   pageHeight: number;
+  snapToGuides: boolean;
+  onGuidePoint: (point: Point) => void;
   onBeginMutation: () => void;
   onUpdate: (patch: Partial<EditorElement>) => void;
 }
@@ -689,6 +895,8 @@ function LineEndpointHandle({
   zoom,
   pageWidth,
   pageHeight,
+  snapToGuides,
+  onGuidePoint,
   onBeginMutation,
   onUpdate,
 }: LineEndpointHandleProps) {
@@ -728,11 +936,12 @@ function LineEndpointHandle({
       onPointerMove={(event) => {
         const interaction = interactionRef.current;
         if (!interaction) return;
+        event.stopPropagation();
         if (!interaction.started) {
           interaction.started = true;
           onBeginMutation();
         }
-        const moving = snapLineEndpoint(interaction.fixed, {
+        const candidate = {
           x: clamp(
             interaction.moving.x + (event.clientX - interaction.pointerX) / zoom,
             0,
@@ -743,7 +952,12 @@ function LineEndpointHandle({
             0,
             pageHeight,
           ),
-        });
+        };
+        let moving = snapLineEndpoint(interaction.fixed, candidate);
+        if (snapToGuides && !event.altKey) {
+          moving = snapGuidePoint(moving, pageWidth, pageHeight);
+        }
+        if (snapToGuides) onGuidePoint(moving);
         onUpdate(
           (endpoint === "start"
             ? lineGeometry(moving, interaction.fixed, pageWidth, pageHeight)
