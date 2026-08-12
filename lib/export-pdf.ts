@@ -23,6 +23,7 @@ import type {
   DrawingElement,
   EditorElement,
   EditorPage,
+  LineElement,
   Point,
   SourceLinkAnnotation,
   TextElement,
@@ -233,6 +234,31 @@ const drawPath = (
       opacity: element.opacity,
     });
   }
+};
+
+const drawStraightLine = (
+  outputPage: PDFPage,
+  page: EditorPage,
+  element: LineElement,
+) => {
+  const rotation = page.originalRotation + page.rotation;
+  const outputSize = outputPageSize(page);
+  const endpoint = (point: Point) => displayPointToPdf(
+    {
+      x: element.x + point.x * element.width,
+      y: element.y + point.y * element.height,
+    },
+    outputSize.width,
+    outputSize.height,
+    rotation,
+  );
+  outputPage.drawLine({
+    start: endpoint(element.start),
+    end: endpoint(element.end),
+    thickness: element.strokeWidth,
+    color: hexToRgb(element.color),
+    opacity: element.opacity,
+  });
 };
 
 const visualRectangleBoundsInPdf = (
@@ -682,6 +708,8 @@ export async function exportPdf(
         await drawImageElement(output, outputPage, editorPage, element);
       } else if (element.type === "draw") {
         drawPath(outputPage, editorPage, element);
+      } else if (element.type === "line") {
+        drawStraightLine(outputPage, editorPage, element);
       } else {
         const bounds = elementBoundsInPdf(element, editorPage);
         outputPage.drawRectangle({

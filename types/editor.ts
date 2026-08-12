@@ -5,6 +5,7 @@ export type EditorTool =
   | "image"
   | "signature"
   | "draw"
+  | "line"
   | "highlight"
   | "redact";
 
@@ -90,6 +91,15 @@ export interface DrawingElement extends ElementBase {
   strokeWidth: number;
 }
 
+export interface LineElement extends ElementBase {
+  type: "line";
+  /** Endpoints normalized to this element's interaction box. */
+  start: Point;
+  end: Point;
+  color: string;
+  strokeWidth: number;
+}
+
 export interface HighlightElement extends ElementBase {
   type: "highlight";
   color: string;
@@ -107,6 +117,7 @@ export type EditorElement =
   | ImageElement
   | SignatureElement
   | DrawingElement
+  | LineElement
   | HighlightElement
   | RedactElement;
 

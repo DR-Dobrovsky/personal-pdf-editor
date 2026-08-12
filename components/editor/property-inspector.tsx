@@ -129,10 +129,31 @@ export default function PropertyInspector({
         </>
       )}
 
-      {element.type === "draw" && (
+      {(element.type === "draw" || element.type === "line") && (
         <div className="field-grid">
-          <label className="color-field"><span>Ink</span><input type="color" value={element.color} onChange={(event) => fieldChange({ color: event.target.value } as Partial<EditorElement>)} /></label>
-          <label><span>Width</span><input type="number" min={1} max={20} value={element.strokeWidth} onChange={(event) => fieldChange({ strokeWidth: Number(event.target.value) } as Partial<EditorElement>)} /></label>
+          <label className="color-field">
+            <span>{element.type === "line" ? "Color" : "Ink"}</span>
+            <input
+              type="color"
+              value={element.color}
+              onChange={(event) => fieldChange({ color: event.target.value } as Partial<EditorElement>)}
+            />
+          </label>
+          <label>
+            <span>Thickness</span>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={element.strokeWidth}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) {
+                  fieldChange({ strokeWidth: Math.min(20, Math.max(1, value)) } as Partial<EditorElement>);
+                }
+              }}
+            />
+          </label>
         </div>
       )}
 
@@ -145,12 +166,18 @@ export default function PropertyInspector({
         <input type="range" min={10} max={100} value={element.opacity * 100} onPointerDown={onBeginChange} onChange={(event) => onChange({ opacity: Number(event.target.value) / 100 } as Partial<EditorElement>)} />
       </label>
 
-      <div className="field-grid dimensions-grid">
-        <label><span>Width</span><input type="number" min={8} value={Math.round(element.width)} onChange={(event) => fieldChange({ width: Number(event.target.value) } as Partial<EditorElement>)} /></label>
-        <label><span>Height</span><input type="number" min={8} value={Math.round(element.height)} onChange={(event) => fieldChange({ height: Number(event.target.value) } as Partial<EditorElement>)} /></label>
-      </div>
+      {element.type !== "line" && (
+        <div className="field-grid dimensions-grid">
+          <label><span>Width</span><input type="number" min={8} value={Math.round(element.width)} onChange={(event) => fieldChange({ width: Number(event.target.value) } as Partial<EditorElement>)} /></label>
+          <label><span>Height</span><input type="number" min={8} value={Math.round(element.height)} onChange={(event) => fieldChange({ height: Number(event.target.value) } as Partial<EditorElement>)} /></label>
+        </div>
+      )}
 
-      <p className="inspector-tip">Tip: drag the corner handle to resize this item.</p>
+      <p className="inspector-tip">
+        {element.type === "line"
+          ? "Tip: drag either endpoint to change the line’s length and angle."
+          : "Tip: drag the corner handle to resize this item."}
+      </p>
     </aside>
   );
 }

@@ -6,6 +6,7 @@ import type {
   EditorElement,
   EditorPage,
   EditorTool,
+  LineElement,
   Point,
   SpaceBand,
 } from "@/types/editor";
@@ -16,6 +17,51 @@ import {
   pageDisplaySize,
   spaceVisualTop,
 } from "@/lib/editor-utils";
+
+interface LineGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  start: Point;
+  end: Point;
+}
+
+const MIN_LINE_BOX = 12;
+
+const lineGeometry = (
+  start: Point,
+  end: Point,
+  pageWidth: number,
+  pageHeight: number,
+): LineGeometry => {
+  const axis = (first: number, second: number, limit: number) => {
+    const minimum = Math.min(first, second);
+    const maximum = Math.max(first, second);
+    const range = maximum - minimum;
+    if (range >= MIN_LINE_BOX) return { origin: minimum, size: range };
+    const size = Math.min(MIN_LINE_BOX, limit);
+    const center = (first + second) / 2;
+    return {
+      origin: clamp(center - size / 2, 0, Math.max(0, limit - size)),
+      size,
+    };
+  };
+  const horizontal = axis(start.x, end.x, pageWidth);
+  const vertical = axis(start.y, end.y, pageHeight);
+  const normalize = (point: Point): Point => ({
+    x: clamp((point.x - horizontal.origin) / horizontal.size, 0, 1),
+    y: clamp((point.y - vertical.origin) / vertical.size, 0, 1),
+  });
+  return {
+    x: horizontal.origin,
+    y: vertical.origin,
+    width: horizontal.size,
+    height: vertical.size,
+    start: normalize(start),
+    end: normalize(end),
+  };
+};
 
 interface PdfPageProps {
   document: PDFDocumentProxy;
@@ -36,6 +82,7 @@ interface PdfPageProps {
   onUpdate: (id: string, patch: Partial<EditorElement>) => void;
   onResizeSpace: (id: string, height: number) => void;
   onPlace: (point: Point) => void;
+  onLine: (line: LineGeometry) => void;
   onDraw: (drawing: { x: number; y: number; width: number; height: number; points: Point[] }) => void;
 }
 
@@ -58,6 +105,7 @@ export default function PdfPage({
   onUpdate,
   onResizeSpace,
   onPlace,
+  onLine,
   onDraw,
 }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -69,10 +117,12 @@ export default function PdfPage({
   } | null>(null);
   const [sourceRenderVersion, setSourceRenderVersion] = useState(0);
   const [draft, setDraft] = useState<Point[] | null>(null);
+  const [lineDraft, setLineDraft] = useState<{ start: Point; end: Point } | null>(null);
   const [pixelRatio, setPixelRatio] = useState(() =>
     typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
   );
   const draftRef = useRef<Point[] | null>(null);
+  const lineDraftRef = useRef<{ start: Point; end: Point } | null>(null);
   const totalRotation = page.originalRotation + page.rotation;
   const baseSize = basePageDisplaySize(page);
   const size = pageDisplaySize(page);
@@ -202,6 +252,11 @@ export default function PdfPage({
             draftRef.current = [first];
             setDraft([first]);
             event.currentTarget.setPointerCapture(event.pointerId);
+          } else if (tool === "line") {
+            const first = relativePoint(event);
+            lineDraftRef.current = { start: first, end: first };
+            setLineDraft(lineDraftRef.current);
+            event.currentTarget.setPointerCapture(event.pointerId);
           } else if (tool === "select") {
             onSelectElement(null);
           }
@@ -214,6 +269,14 @@ export default function PdfPage({
           }
         }}
         onPointerMove={(event) => {
+          if (tool === "line" && lineDraftRef.current) {
+            lineDraftRef.current = {
+              start: lineDraftRef.current.start,
+              end: relativePoint(event),
+            };
+            setLineDraft(lineDraftRef.current);
+            return;
+          }
           if (tool !== "draw" || !draftRef.current) return;
           const next = relativePoint(event);
           const previous = draftRef.current[draftRef.current.length - 1];
@@ -221,7 +284,17 @@ export default function PdfPage({
           draftRef.current = [...draftRef.current, next];
           setDraft(draftRef.current);
         }}
-        onPointerUp={() => {
+        onPointerUp={(event) => {
+          if (lineDraftRef.current) {
+            const start = lineDraftRef.current.start;
+            const end = relativePoint(event);
+            if (Math.hypot(end.x - start.x, end.y - start.y) >= 2) {
+              onLine(lineGeometry(start, end, size.width, size.height));
+            }
+            lineDraftRef.current = null;
+            setLineDraft(null);
+            return;
+          }
           const points = draftRef.current;
           if (!points || points.length < 2) { draftRef.current = null; setDraft(null); return; }
           const xs = points.map(({ x }) => x);
@@ -237,6 +310,12 @@ export default function PdfPage({
           });
           draftRef.current = null;
           setDraft(null);
+        }}
+        onPointerCancel={() => {
+          draftRef.current = null;
+          lineDraftRef.current = null;
+          setDraft(null);
+          setLineDraft(null);
         }}
       >
         <canvas ref={canvasRef} className="pdf-canvas" />
@@ -276,6 +355,19 @@ export default function PdfPage({
           {draft && (
             <svg className="draft-path" viewBox={`0 0 ${size.width} ${size.height}`} preserveAspectRatio="none">
               <polyline points={draft.map(({ x, y }) => `${x},${y}`).join(" ")} fill="none" stroke="#2f6f55" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+          {lineDraft && (
+            <svg className="draft-path" viewBox={`0 0 ${size.width} ${size.height}`} preserveAspectRatio="none">
+              <line
+                x1={lineDraft.start.x}
+                y1={lineDraft.start.y}
+                x2={lineDraft.end.x}
+                y2={lineDraft.end.y}
+                stroke="#2f6f55"
+                strokeWidth={2.5}
+                strokeLinecap="round"
+              />
             </svg>
           )}
         </div>
@@ -423,7 +515,9 @@ function EditableElement({
         width: element.width * zoom,
         height: element.height * zoom,
         opacity: element.opacity,
-        pointerEvents: enabled || editing ? "auto" : "none",
+        pointerEvents: element.type === "line"
+          ? "none"
+          : enabled || editing ? "auto" : "none",
       }}
       onPointerDown={(event) => {
         if (!enabled || editing) return;
@@ -501,8 +595,33 @@ function EditableElement({
           <polyline points={element.points.map(({ x, y }) => `${x},${y}`).join(" ")} fill="none" stroke={element.color} strokeWidth={element.strokeWidth} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
         </svg>
       )}
+      {element.type === "line" && (
+        <LineContent element={element} zoom={zoom} enabled={enabled} />
+      )}
       {(element.type === "highlight" || element.type === "redact") && <span style={{ background: element.color }} />}
-      {selected && !editing && (
+      {selected && !editing && element.type === "line" && (
+        <>
+          <LineEndpointHandle
+            endpoint="start"
+            element={element}
+            zoom={zoom}
+            pageWidth={pageWidth}
+            pageHeight={pageHeight}
+            onBeginMutation={onBeginMutation}
+            onUpdate={onUpdate}
+          />
+          <LineEndpointHandle
+            endpoint="end"
+            element={element}
+            zoom={zoom}
+            pageWidth={pageWidth}
+            pageHeight={pageHeight}
+            onBeginMutation={onBeginMutation}
+            onUpdate={onUpdate}
+          />
+        </>
+      )}
+      {selected && !editing && element.type !== "line" && (
         <button
           className="resize-handle"
           aria-label="Resize element"
@@ -532,5 +651,145 @@ function EditableElement({
         />
       )}
     </div>
+  );
+}
+
+function LineContent({
+  element,
+  zoom,
+  enabled,
+}: {
+  element: LineElement;
+  zoom: number;
+  enabled: boolean;
+}) {
+  const start = {
+    x: element.start.x * element.width,
+    y: element.start.y * element.height,
+  };
+  const end = {
+    x: element.end.x * element.width,
+    y: element.end.y * element.height,
+  };
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+
+  return (
+    <>
+      <svg
+        className="line-element-svg"
+        viewBox={`0 0 ${element.width} ${element.height}`}
+        preserveAspectRatio="none"
+      >
+        <line
+          className="line-visible-stroke"
+          x1={start.x}
+          y1={start.y}
+          x2={end.x}
+          y2={end.y}
+          stroke={element.color}
+          strokeWidth={Math.max(1, element.strokeWidth * zoom)}
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <button
+        type="button"
+        className="line-selection-target"
+        aria-label="Select and move line"
+        style={{
+          left: start.x * zoom,
+          top: start.y * zoom,
+          width: Math.max(14, length * zoom),
+          transform: `translateY(-50%) rotate(${angle}deg)`,
+          pointerEvents: enabled ? "auto" : "none",
+        }}
+      />
+    </>
+  );
+}
+
+interface LineEndpointHandleProps {
+  endpoint: "start" | "end";
+  element: LineElement;
+  zoom: number;
+  pageWidth: number;
+  pageHeight: number;
+  onBeginMutation: () => void;
+  onUpdate: (patch: Partial<EditorElement>) => void;
+}
+
+function LineEndpointHandle({
+  endpoint,
+  element,
+  zoom,
+  pageWidth,
+  pageHeight,
+  onBeginMutation,
+  onUpdate,
+}: LineEndpointHandleProps) {
+  const interactionRef = useRef<{
+    pointerX: number;
+    pointerY: number;
+    moving: Point;
+    fixed: Point;
+    started: boolean;
+  } | null>(null);
+  const point = element[endpoint];
+
+  return (
+    <button
+      className="line-endpoint-handle"
+      aria-label={`Move ${endpoint} of line`}
+      style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        const start = {
+          x: element.x + element.start.x * element.width,
+          y: element.y + element.start.y * element.height,
+        };
+        const end = {
+          x: element.x + element.end.x * element.width,
+          y: element.y + element.end.y * element.height,
+        };
+        interactionRef.current = {
+          pointerX: event.clientX,
+          pointerY: event.clientY,
+          moving: endpoint === "start" ? start : end,
+          fixed: endpoint === "start" ? end : start,
+          started: false,
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        const interaction = interactionRef.current;
+        if (!interaction) return;
+        if (!interaction.started) {
+          interaction.started = true;
+          onBeginMutation();
+        }
+        const moving = {
+          x: clamp(
+            interaction.moving.x + (event.clientX - interaction.pointerX) / zoom,
+            0,
+            pageWidth,
+          ),
+          y: clamp(
+            interaction.moving.y + (event.clientY - interaction.pointerY) / zoom,
+            0,
+            pageHeight,
+          ),
+        };
+        onUpdate(
+          (endpoint === "start"
+            ? lineGeometry(moving, interaction.fixed, pageWidth, pageHeight)
+            : lineGeometry(interaction.fixed, moving, pageWidth, pageHeight)) as Partial<EditorElement>,
+        );
+      }}
+      onPointerUp={() => { interactionRef.current = null; }}
+      onPointerCancel={() => { interactionRef.current = null; }}
+    />
   );
 }

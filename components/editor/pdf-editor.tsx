@@ -35,6 +35,17 @@ const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const DEFAULT_SPACE_HEIGHT = 96;
 const MIN_SPACE_HEIGHT = 24;
 
+const elementVerticalBounds = (element: EditorElement) => {
+  if (element.type !== "line") {
+    return { top: element.y, bottom: element.y + element.height, height: element.height };
+  }
+  const startY = element.y + element.start.y * element.height;
+  const endY = element.y + element.end.y * element.height;
+  const top = Math.min(startY, endY);
+  const bottom = Math.max(startY, endY);
+  return { top, bottom, height: bottom - top };
+};
+
 type PdfJsAnnotation = {
   annotationType?: number;
   subtype?: string;
@@ -144,8 +155,12 @@ export default function PdfEditor() {
         : item,
     ));
     setElements((items) => items.map((element) => {
-      if (element.pageId !== pageId || element.y < top) return element;
-      const y = element.y >= bottom ? element.y - space.height : top;
+      if (element.pageId !== pageId) return element;
+      const bounds = elementVerticalBounds(element);
+      if (bounds.top < top) return element;
+      const y = bounds.top >= bottom
+        ? element.y - space.height
+        : element.y + top - bounds.top;
       return { ...element, y: Math.max(0, y) } as EditorElement;
     }));
     setSelection(null);
@@ -158,11 +173,12 @@ export default function PdfEditor() {
     const space = page?.spaces.find(({ id }) => id === spaceId);
     if (!page || !space) return;
     const top = spaceVisualTop(page, space);
-    const minimumForGapElements = elementsRef.current.reduce((minimum, element) =>
-      element.pageId === pageId && element.y >= top && element.y < top + space.height
-        ? Math.max(minimum, element.height)
-        : minimum,
-    MIN_SPACE_HEIGHT);
+    const minimumForGapElements = elementsRef.current.reduce((minimum, element) => {
+      const bounds = elementVerticalBounds(element);
+      return element.pageId === pageId && bounds.top >= top && bounds.top < top + space.height
+        ? Math.max(minimum, bounds.height)
+        : minimum;
+    }, MIN_SPACE_HEIGHT);
     const nextHeight = clamp(
       Math.max(requestedHeight, minimumForGapElements),
       MIN_SPACE_HEIGHT,
@@ -184,14 +200,17 @@ export default function PdfEditor() {
         : item,
     );
     const nextElements = elementsRef.current.map((element) => {
-      if (element.pageId !== pageId || element.y < top) return element;
-      if (element.y >= oldBottom) {
+      if (element.pageId !== pageId) return element;
+      const bounds = elementVerticalBounds(element);
+      if (bounds.top < top) return element;
+      if (bounds.top >= oldBottom) {
         return { ...element, y: element.y + delta } as EditorElement;
       }
-      if (delta < 0 && element.y + element.height > nextBottom) {
+      if (delta < 0 && bounds.bottom > nextBottom) {
+        const nextVisualTop = Math.max(top, nextBottom - bounds.height);
         return {
           ...element,
-          y: Math.max(top, nextBottom - element.height),
+          y: element.y + nextVisualTop - bounds.top,
         } as EditorElement;
       }
       return element;
@@ -397,7 +416,7 @@ export default function PdfEditor() {
         item.id === page.id ? { ...item, spaces: [...item.spaces, space] } : item,
       ));
       setElements((items) => items.map((element) =>
-        element.pageId === page.id && element.y >= point.y
+        element.pageId === page.id && elementVerticalBounds(element).top >= point.y
           ? { ...element, y: element.y + space.height } as EditorElement
           : element,
       ));
@@ -507,13 +526,24 @@ export default function PdfEditor() {
     const oldSize = basePageDisplaySize(page);
     pushHistory();
     setPages((items) => items.map((item) => item.id === pageId ? { ...item, rotation: (item.rotation + 90) % 360 } : item));
-    setElements((items) => items.map((element) => element.pageId === pageId ? ({
-      ...element,
-      x: Math.max(0, oldSize.height - element.y - element.height),
-      y: element.x,
-      width: element.height,
-      height: element.width,
-    } as EditorElement) : element));
+    setElements((items) => items.map((element) => {
+      if (element.pageId !== pageId) return element;
+      const rotated = {
+        ...element,
+        x: Math.max(0, oldSize.height - element.y - element.height),
+        y: element.x,
+        width: element.height,
+        height: element.width,
+      } as EditorElement;
+      if (element.type === "line") {
+        return {
+          ...rotated,
+          start: { x: 1 - element.start.y, y: element.start.x },
+          end: { x: 1 - element.end.y, y: element.end.x },
+        } as EditorElement;
+      }
+      return rotated;
+    }));
   };
 
   const duplicatePage = (pageId: string) => {
@@ -670,6 +700,10 @@ export default function PdfEditor() {
                   onUpdate={updateElement}
                   onResizeSpace={(id, height) => updateSpaceHeight(page.id, id, height)}
                   onPlace={(point) => placeElement(page, point)}
+                  onLine={(line) => addElement({
+                    id: uid("line"), pageId: page.id, type: "line", ...line,
+                    opacity: 1, color: "#2f6f55", strokeWidth: 2.5,
+                  })}
                   onDraw={(drawing) => addElement({
                     id: uid("draw"), pageId: page.id, type: "draw", ...drawing,
                     opacity: 1, color: "#2f6f55", strokeWidth: 2.5,
