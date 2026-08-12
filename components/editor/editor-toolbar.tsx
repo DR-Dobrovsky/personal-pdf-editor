@@ -12,6 +12,7 @@ import {
   Redo2,
   ScanLine,
   Signature,
+  Slash,
   Type,
   Undo2,
 } from "lucide-react";
@@ -36,6 +37,7 @@ const TOOLS = [
   { id: "select" as const, label: "Select", icon: MousePointer2 },
   { id: "space" as const, label: "Space", icon: Minus },
   { id: "text" as const, label: "Text", icon: Type },
+  { id: "line" as const, label: "Line", icon: Slash },
   { id: "draw" as const, label: "Draw", icon: PenLine },
   { id: "highlight" as const, label: "Highlight", icon: Highlighter },
   { id: "redact" as const, label: "Redact", icon: ScanLine },
