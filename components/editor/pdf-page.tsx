@@ -20,6 +20,7 @@ import {
   spaceVisualTop,
 } from "@/lib/editor-utils";
 import type { LineGeometry } from "@/lib/editor-utils";
+import { editorFont } from "@/lib/editor-fonts";
 
 const GUIDE_STEP = 6;
 const GUIDE_MAJOR_STEP = 24;
@@ -722,7 +723,7 @@ function EditableElement({
           value={element.text}
           style={{
             color: element.color,
-            fontFamily: element.fontFamily,
+            fontFamily: editorFont(element.fontFamily).cssFamily,
             fontSize: element.fontSize * zoom,
             fontWeight: element.bold ? 700 : 400,
             textAlign: element.align,
@@ -742,7 +743,7 @@ function EditableElement({
         <div
           className={`rendered-text ${element.text ? "" : "is-empty"}`}
           title="Click again to edit text"
-          style={{ color: element.color, fontFamily: element.fontFamily, fontSize: element.fontSize * zoom, fontWeight: element.bold ? 700 : 400, textAlign: element.align }}
+          style={{ color: element.color, fontFamily: editorFont(element.fontFamily).cssFamily, fontSize: element.fontSize * zoom, fontWeight: element.bold ? 700 : 400, textAlign: element.align }}
         >
           {element.text || "Click again to type"}
         </div>

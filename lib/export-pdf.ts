@@ -24,6 +24,7 @@ import {
   orderedSpaces,
   outputPageSize,
 } from "@/lib/editor-utils";
+import { editorFont } from "@/lib/editor-fonts";
 import type {
   DrawingElement,
   EditorElement,
@@ -173,18 +174,13 @@ const drawTextElement = async (
   page: EditorPage,
   element: TextElement,
 ) => {
-  const fontNames = {
-    Helvetica: element.bold
-      ? StandardFonts.HelveticaBold
-      : StandardFonts.Helvetica,
-    "Times Roman": element.bold
-      ? StandardFonts.TimesRomanBold
-      : StandardFonts.TimesRoman,
-    Courier: element.bold
-      ? StandardFonts.CourierBold
-      : StandardFonts.Courier,
-  } as const;
-  const font = await document.embedFont(fontNames[element.fontFamily]);
+  const pdfFamily = editorFont(element.fontFamily).pdfFamily;
+  const fontName = pdfFamily === "serif"
+    ? element.bold ? StandardFonts.TimesRomanBold : StandardFonts.TimesRoman
+    : pdfFamily === "mono"
+      ? element.bold ? StandardFonts.CourierBold : StandardFonts.Courier
+      : element.bold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica;
+  const font = await document.embedFont(fontName);
   const bounds = elementBoundsInPdf(element, page);
   const lines = wrapText(element.text, font, element.fontSize, bounds.width);
   const lineHeight = element.fontSize * 1.22;

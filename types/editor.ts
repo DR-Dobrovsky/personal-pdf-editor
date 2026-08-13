@@ -64,11 +64,17 @@ interface ElementBase {
   opacity: number;
 }
 
+export type TextFontFamily =
+  | "Arial"
+  | "Helvetica"
+  | "Times New Roman"
+  | "Courier New";
+
 export interface TextElement extends ElementBase {
   type: "text";
   text: string;
   fontSize: number;
-  fontFamily: "Helvetica" | "Times Roman" | "Courier";
+  fontFamily: TextFontFamily;
   color: string;
   bold: boolean;
   align: "left" | "center" | "right";
