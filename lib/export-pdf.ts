@@ -18,6 +18,7 @@ import {
   type PDFPage,
   type PDFFont,
 } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
 import {
   basePageDisplaySize,
   contentOffsetAtSourceY,
@@ -168,19 +169,109 @@ const wrapText = (
   return lines;
 };
 
+const customFontBytePromises = new Map<string, Promise<Uint8Array>>();
+
+const loadCustomFontBytes = (url: string) => {
+  const cached = customFontBytePromises.get(url);
+  if (cached) return cached;
+
+  const request = fetch(url).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`Unable to load the Aeonik Pro font for export (${response.status}).`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  });
+  customFontBytePromises.set(url, request);
+  void request.catch(() => customFontBytePromises.delete(url));
+  return request;
+};
+
+type CustomFont = ReturnType<typeof fontkit.create>;
+
+const customFontCoveragePromises = new Map<string, Promise<CustomFont>>();
+
+const loadCustomFontCoverage = (url: string) => {
+  const cached = customFontCoveragePromises.get(url);
+  if (cached) return cached;
+
+  const request = loadCustomFontBytes(url).then((bytes) => fontkit.create(bytes));
+  customFontCoveragePromises.set(url, request);
+  void request.catch(() => customFontCoveragePromises.delete(url));
+  return request;
+};
+
+const unsupportedCustomFontCharacters = (font: CustomFont, text: string) => {
+  const unsupported = new Map<number, string>();
+  for (const character of text) {
+    const codePoint = character.codePointAt(0);
+    if (
+      codePoint !== undefined
+      && codePoint !== 0x09
+      && codePoint !== 0x0a
+      && codePoint !== 0x0d
+      && !font.hasGlyphForCodePoint(codePoint)
+    ) {
+      unsupported.set(codePoint, character);
+    }
+  }
+  return [...unsupported].map(([codePoint, character]) => ({ codePoint, character }));
+};
+
+type PdfFontResolver = (element: TextElement) => Promise<PDFFont>;
+
+const createPdfFontResolver = (document: PDFDocument): PdfFontResolver => {
+  const fonts = new Map<string, Promise<PDFFont>>();
+
+  return async (element) => {
+    const definition = editorFont(element.fontFamily);
+    const bold = definition.supportsBold && element.bold;
+    const source = definition.pdf;
+    const cacheKey = source.kind === "custom"
+      ? `${definition.id}:regular`
+      : `standard:${source.family}:${bold ? "bold" : "regular"}`;
+
+    if (source.kind === "custom") {
+      const coverage = await loadCustomFontCoverage(source.regularUrl);
+      const unsupported = unsupportedCustomFontCharacters(coverage, element.text);
+      if (unsupported.length > 0) {
+        const preview = unsupported.slice(0, 4).map(({ codePoint, character }) =>
+          `${JSON.stringify(character)} (U+${codePoint.toString(16).toUpperCase().padStart(4, "0")})`,
+        );
+        const remaining = unsupported.length > preview.length
+          ? ` and ${unsupported.length - preview.length} more`
+          : "";
+        throw new Error(
+          `Aeonik Pro Regular does not include ${preview.join(", ")}${remaining}. Remove or replace these characters, or choose a font that includes them before exporting.`,
+        );
+      }
+    }
+
+    const cached = fonts.get(cacheKey);
+    if (cached) return cached;
+
+    const font = source.kind === "custom"
+      ? loadCustomFontBytes(source.regularUrl).then((bytes) =>
+          document.embedFont(bytes, { subset: true }),
+        )
+      : document.embedFont(
+          source.family === "serif"
+            ? bold ? StandardFonts.TimesRomanBold : StandardFonts.TimesRoman
+            : source.family === "mono"
+              ? bold ? StandardFonts.CourierBold : StandardFonts.Courier
+              : bold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica,
+        );
+    fonts.set(cacheKey, font);
+    return font;
+  };
+};
+
 const drawTextElement = async (
-  document: PDFDocument,
+  resolveFont: PdfFontResolver,
   outputPage: PDFPage,
   page: EditorPage,
   element: TextElement,
 ) => {
-  const pdfFamily = editorFont(element.fontFamily).pdfFamily;
-  const fontName = pdfFamily === "serif"
-    ? element.bold ? StandardFonts.TimesRomanBold : StandardFonts.TimesRoman
-    : pdfFamily === "mono"
-      ? element.bold ? StandardFonts.CourierBold : StandardFonts.Courier
-      : element.bold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica;
-  const font = await document.embedFont(fontName);
+  const font = await resolveFont(element);
   const bounds = elementBoundsInPdf(element, page);
   const lines = wrapText(element.text, font, element.fontSize, bounds.width);
   const lineHeight = element.fontSize * 1.22;
@@ -681,6 +772,8 @@ export async function exportPdf(
     updateMetadata: false,
   });
   const output = await PDFDocument.create();
+  output.registerFontkit(fontkit);
+  const resolveFont = createPdfFontResolver(output);
   output.setCreator("Paperly private PDF editor");
   output.setProducer("Paperly");
   const annotationCopier = PDFObjectCopier.for(source.context, output.context);
@@ -736,7 +829,7 @@ export async function exportPdf(
       ({ pageId }) => pageId === editorPage.id,
     )) {
       if (element.type === "text") {
-        await drawTextElement(output, outputPage, editorPage, element);
+        await drawTextElement(resolveFont, outputPage, editorPage, element);
       } else if (element.type === "image" || element.type === "signature") {
         await drawImageElement(output, outputPage, editorPage, element);
       } else if (element.type === "draw") {

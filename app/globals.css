@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "Aeonik Pro";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/AeonikPro-Regular.ttf") format("truetype");
+}
+
 :root {
   --ink: #17211b;
   --ink-soft: #34423a;

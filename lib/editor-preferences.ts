@@ -1,4 +1,4 @@
-import { isTextFontFamily } from "@/lib/editor-fonts";
+import { editorFont, isTextFontFamily } from "@/lib/editor-fonts";
 import type { EditorElement, TextFontFamily } from "@/types/editor";
 
 const STORAGE_KEY = "paperly.editor-style-preferences.v1";
@@ -77,15 +77,17 @@ export const parseEditorStylePreferences = (value: unknown): EditorStylePreferen
   const image = record(source.image);
   const signature = record(source.signature);
   const defaults = DEFAULT_EDITOR_STYLE_PREFERENCES;
+  const fontFamily = isTextFontFamily(text.fontFamily)
+    ? text.fontFamily
+    : defaults.text.fontFamily;
 
   return {
     text: {
-      fontFamily: isTextFontFamily(text.fontFamily)
-        ? text.fontFamily
-        : defaults.text.fontFamily,
+      fontFamily,
       fontSize: finiteWithin(text.fontSize, defaults.text.fontSize, 2, 96),
       color: color(text.color, defaults.text.color),
-      bold: typeof text.bold === "boolean" ? text.bold : defaults.text.bold,
+      bold: editorFont(fontFamily).supportsBold
+        && (typeof text.bold === "boolean" ? text.bold : defaults.text.bold),
       align: text.align === "left" || text.align === "center" || text.align === "right"
         ? text.align
         : defaults.text.align,

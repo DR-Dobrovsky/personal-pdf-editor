@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { AlignCenter, AlignLeft, AlignRight, Copy, Trash2 } from "lucide-react";
-import { EDITOR_FONTS, isTextFontFamily } from "@/lib/editor-fonts";
+import { EDITOR_FONTS, editorFont, isTextFontFamily } from "@/lib/editor-fonts";
 import { lineMetrics } from "@/lib/editor-utils";
 import type { EditorElement, LineElement, SpaceBand } from "@/types/editor";
 
@@ -119,7 +119,11 @@ export default function PropertyInspector({
                 value={element.fontFamily}
                 onChange={(event) => {
                   if (isTextFontFamily(event.target.value)) {
-                    fieldChange({ fontFamily: event.target.value } as Partial<EditorElement>);
+                    const font = editorFont(event.target.value);
+                    fieldChange({
+                      fontFamily: event.target.value,
+                      ...(font.supportsBold ? {} : { bold: false }),
+                    } as Partial<EditorElement>);
                   }
                 }}
               >
@@ -148,7 +152,14 @@ export default function PropertyInspector({
           </div>
           <div className="field-row">
             <label className="color-field"><span>Color</span><input type="color" value={element.color} onChange={(event) => fieldChange({ color: event.target.value } as Partial<EditorElement>)} /></label>
-            <button className={`toggle-button ${element.bold ? "is-active" : ""}`} onClick={() => fieldChange({ bold: !element.bold } as Partial<EditorElement>)}>B</button>
+            <button
+              className={`toggle-button ${element.bold ? "is-active" : ""}`}
+              disabled={!editorFont(element.fontFamily).supportsBold}
+              title={editorFont(element.fontFamily).supportsBold
+                ? "Bold"
+                : "Aeonik Pro Bold is unavailable until its licensed font file is added"}
+              onClick={() => fieldChange({ bold: !element.bold } as Partial<EditorElement>)}
+            >B</button>
             <div className="segmented-buttons">
               {([AlignLeft, AlignCenter, AlignRight] as const).map((Icon, index) => {
                 const align = (["left", "center", "right"] as const)[index];
