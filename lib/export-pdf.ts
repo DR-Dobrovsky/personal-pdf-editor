@@ -15,7 +15,7 @@ import {
   pushGraphicsState,
   rectangle,
   rgb,
-  type PDFPage,
+  PDFPage,
   type PDFFont,
 } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
@@ -770,11 +770,69 @@ const drawPageWithSpaces = async (
   return outputPage;
 };
 
-export async function exportPdf(
+const copyPageForVisibleRendering = (
+  output: PDFDocument,
+  sourcePage: PDFPage,
+  copier: PDFObjectCopier,
+) => {
+  // Keep document-level objects shared through one copier so OCG identity is
+  // preserved, while detaching every page-local container that pdf-lib mutates
+  // when page-specific editor elements are drawn.
+  const detachedPage = sourcePage.node.clone(sourcePage.node.context);
+
+  const sourceContents = sourcePage.node.Contents();
+  if (sourceContents instanceof PDFArray) {
+    detachedPage.set(
+      PDFName.of("Contents"),
+      sourceContents.clone(sourcePage.node.context),
+    );
+  }
+
+  const sourceResources = sourcePage.node.Resources();
+  if (sourceResources) {
+    const detachedResources = sourceResources.clone(sourcePage.node.context);
+    for (const resourceName of ["Font", "XObject", "ExtGState"]) {
+      const key = PDFName.of(resourceName);
+      const dictionary = sourceResources.lookupMaybe(key, PDFDict);
+      if (dictionary) {
+        detachedResources.set(key, dictionary.clone(sourcePage.node.context));
+      }
+    }
+    detachedPage.set(PDFName.of("Resources"), detachedResources);
+  }
+
+  const sourceAnnotations = sourcePage.node.Annots();
+  detachedPage.delete(PDFName.of("Annots"));
+
+  const copiedPage = copier.copy(detachedPage);
+  const copiedRef = output.context.register(copiedPage);
+
+  if (sourceAnnotations) {
+    const copiedAnnotations = output.context.obj([]);
+    for (let index = 0; index < sourceAnnotations.size(); index += 1) {
+      const sourceAnnotation = sourceAnnotations.lookupMaybe(index, PDFDict);
+      if (!sourceAnnotation) {
+        copiedAnnotations.push(copier.copy(sourceAnnotations.get(index)));
+        continue;
+      }
+      const detachedAnnotation = sourceAnnotation.clone(sourceAnnotation.context);
+      detachedAnnotation.delete(PDFName.of("P"));
+      const copiedAnnotation = copier.copy(detachedAnnotation);
+      copiedAnnotation.set(PDFName.of("P"), copiedRef);
+      copiedAnnotations.push(output.context.register(copiedAnnotation));
+    }
+    copiedPage.set(PDFName.of("Annots"), copiedAnnotations);
+  }
+
+  return PDFPage.of(copiedPage, copiedRef, output);
+};
+
+const composePdf = async (
   sourceBytes: Uint8Array,
   pages: EditorPage[],
   elements: EditorElement[],
-) {
+  preserveOptionalContent: boolean,
+) => {
   const source = await PDFDocument.load(sourceBytes, {
     updateMetadata: false,
   });
@@ -783,7 +841,20 @@ export async function exportPdf(
   const resolveFont = createPdfFontResolver(output);
   output.setCreator("Paperly private PDF editor");
   output.setProducer("Paperly");
-  const annotationCopier = PDFObjectCopier.for(source.context, output.context);
+
+  const sourceCopier = preserveOptionalContent
+    ? PDFObjectCopier.for(source.context, output.context)
+    : undefined;
+  if (sourceCopier) {
+    await source.flush();
+    const optionalContentKey = PDFName.of("OCProperties");
+    const optionalContent = source.catalog.get(optionalContentKey);
+    if (optionalContent) {
+      output.catalog.set(optionalContentKey, sourceCopier.copy(optionalContent));
+    }
+  }
+  const annotationCopier = sourceCopier
+    ?? PDFObjectCopier.for(source.context, output.context);
   const exportedPages: ExportedPageRecord[] = [];
   const outputPagesBySourceIndex = new Map<number, ExportedPageRecord[]>();
 
@@ -794,9 +865,14 @@ export async function exportPdf(
       if (editorPage.hasFormFields) {
         throw new Error("Cannot insert Space on a page with interactive form fields.");
       }
-      outputPage = await drawPageWithSpaces(output, sourcePage, editorPage);
+      const pageForDrawing = sourceCopier
+        ? copyPageForVisibleRendering(output, sourcePage, sourceCopier)
+        : sourcePage;
+      outputPage = await drawPageWithSpaces(output, pageForDrawing, editorPage);
     } else {
-      const [copiedPage] = await output.copyPages(source, [editorPage.sourceIndex]);
+      const copiedPage = sourceCopier
+        ? copyPageForVisibleRendering(output, sourcePage, sourceCopier)
+        : (await output.copyPages(source, [editorPage.sourceIndex]))[0];
       output.addPage(copiedPage);
       copiedPage.setRotation(
         degrees(
@@ -855,4 +931,20 @@ export async function exportPdf(
   }
 
   return output.save();
+};
+
+export async function exportPdf(
+  sourceBytes: Uint8Array,
+  pages: EditorPage[],
+  elements: EditorElement[],
+) {
+  return composePdf(sourceBytes, pages, elements, false);
+}
+
+export async function exportPdfForVisibleRendering(
+  sourceBytes: Uint8Array,
+  pages: EditorPage[],
+  elements: EditorElement[],
+) {
+  return composePdf(sourceBytes, pages, elements, true);
 }
