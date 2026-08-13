@@ -65,6 +65,7 @@ interface ElementBase {
 }
 
 export type TextFontFamily =
+  | "Aeonik Pro"
   | "Arial"
   | "Helvetica"
   | "Times New Roman"

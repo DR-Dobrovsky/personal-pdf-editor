@@ -760,8 +760,13 @@ export default function PdfEditor() {
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       setNotice("Your edited PDF has been downloaded");
     } catch (caught) {
-      console.error(caught);
-      setNotice("Export failed. This PDF may have restrictions that prevent editing.");
+      const aeonikFontError = caught instanceof Error && caught.message.includes("Aeonik Pro");
+      if (!aeonikFontError) console.error(caught);
+      setNotice(
+        aeonikFontError
+          ? caught.message
+          : "Export failed. This PDF may have restrictions that prevent editing.",
+      );
     } finally {
       setExporting(false);
     }
