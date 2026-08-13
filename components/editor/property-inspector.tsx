@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { AlignCenter, AlignLeft, AlignRight, Copy, Trash2 } from "lucide-react";
+import { EDITOR_FONTS, isTextFontFamily } from "@/lib/editor-fonts";
 import { lineMetrics } from "@/lib/editor-utils";
 import type { EditorElement, LineElement, SpaceBand } from "@/types/editor";
 
@@ -114,8 +115,17 @@ export default function PropertyInspector({
           <div className="field-grid">
             <label>
               <span>Font</span>
-              <select value={element.fontFamily} onChange={(event) => fieldChange({ fontFamily: event.target.value } as Partial<EditorElement>)}>
-                <option>Helvetica</option><option>Times Roman</option><option>Courier</option>
+              <select
+                value={element.fontFamily}
+                onChange={(event) => {
+                  if (isTextFontFamily(event.target.value)) {
+                    fieldChange({ fontFamily: event.target.value } as Partial<EditorElement>);
+                  }
+                }}
+              >
+                {EDITOR_FONTS.map((font) => (
+                  <option key={font.id} value={font.id}>{font.label}</option>
+                ))}
               </select>
             </label>
             <label>
@@ -203,6 +213,8 @@ export default function PropertyInspector({
           <label><span>Height</span><input type="number" min={8} value={Math.round(element.height)} onChange={(event) => fieldChange({ height: Number(event.target.value) } as Partial<EditorElement>)} /></label>
         </div>
       )}
+
+      <p className="inspector-tip">Appearance changes are remembered for the next new {element.type === "draw" ? "drawing" : element.type}.</p>
 
       <p className="inspector-tip">
         {element.type === "line"

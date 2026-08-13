@@ -21,6 +21,12 @@ import {
   visualYToSourceY,
 } from "@/lib/editor-utils";
 import { exportPdf } from "@/lib/export-pdf";
+import {
+  DEFAULT_EDITOR_STYLE_PREFERENCES,
+  loadEditorStylePreferences,
+  rememberElementStyle,
+  saveEditorStylePreferences,
+} from "@/lib/editor-preferences";
 import type {
   EditorElement,
   EditorPage,
@@ -130,6 +136,7 @@ export default function PdfEditor() {
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
   const pagesRef = useRef(pages);
   const elementsRef = useRef(elements);
+  const stylePreferencesRef = useRef(DEFAULT_EDITOR_STYLE_PREFERENCES);
   const clipboardRef = useRef<EditorClipboard | null>(null);
   const pasteSequenceRef = useRef<{ pageId: string | null; count: number }>({
     pageId: null,
@@ -138,6 +145,9 @@ export default function PdfEditor() {
 
   useEffect(() => { pagesRef.current = pages; }, [pages]);
   useEffect(() => { elementsRef.current = elements; }, [elements]);
+  useEffect(() => {
+    stylePreferencesRef.current = loadEditorStylePreferences();
+  }, []);
   useEffect(() => () => { void loadingTaskRef.current?.destroy(); }, []);
 
   const snapshot = useCallback(
@@ -571,26 +581,26 @@ export default function PdfEditor() {
       setTool("select");
       return;
     }
+    const styles = stylePreferencesRef.current;
     if (tool === "text") {
       const textElement: EditorElement = {
         id: uid("text"), pageId: page.id, type: "text",
         x: Math.max(0, Math.min(point.x, size.width - 190)),
         y: Math.max(0, Math.min(point.y, size.height - 52)),
-        width: 190, height: 52, opacity: 1, text: "",
-        fontSize: 18, fontFamily: "Helvetica", color: "#17211b", bold: false, align: "left",
+        width: 190, height: 52, text: "", ...styles.text,
       };
       addElement(textElement, true);
     } else if (tool === "highlight") {
       addElement({
         id: uid("highlight"), pageId: page.id, type: "highlight",
         x: Math.max(0, Math.min(point.x, size.width - 160)), y: Math.max(0, Math.min(point.y, size.height - 32)),
-        width: 160, height: 32, opacity: 0.38, color: "#f4d35e",
+        width: 160, height: 32, ...styles.highlight,
       });
     } else if (tool === "redact") {
       addElement({
         id: uid("redact"), pageId: page.id, type: "redact",
         x: Math.max(0, Math.min(point.x, size.width - 160)), y: Math.max(0, Math.min(point.y, size.height - 32)),
-        width: 160, height: 32, opacity: 1, color: "#17211b",
+        width: 160, height: 32, ...styles.redact,
       });
     }
   };
@@ -604,7 +614,7 @@ export default function PdfEditor() {
     addElement({
       id: uid(kind), pageId: page.id, type: kind, src,
       x: Math.max(0, (size.width - width) / 2), y: Math.max(0, (size.height - height) / 2),
-      width, height, opacity: 1,
+      width, height, ...stylePreferencesRef.current[kind],
     });
   };
 
@@ -625,8 +635,16 @@ export default function PdfEditor() {
   };
 
   const updateElement = (id: string, patch: Partial<EditorElement>) => {
-    setElements((items) => items.map((element) =>
-      element.id === id ? ({ ...element, ...patch } as EditorElement) : element,
+    const element = elementsRef.current.find((candidate) => candidate.id === id);
+    if (element) {
+      const preferences = rememberElementStyle(stylePreferencesRef.current, element, patch);
+      if (preferences !== stylePreferencesRef.current) {
+        stylePreferencesRef.current = preferences;
+        saveEditorStylePreferences(preferences);
+      }
+    }
+    setElements((items) => items.map((candidate) =>
+      candidate.id === id ? ({ ...candidate, ...patch } as EditorElement) : candidate,
     ));
   };
 
@@ -867,11 +885,11 @@ export default function PdfEditor() {
                   onPlace={(point) => placeElement(page, point)}
                   onLine={(line) => addElement({
                     id: uid("line"), pageId: page.id, type: "line", ...line,
-                    opacity: 1, color: "#2f6f55", strokeWidth: 2.5,
+                    ...stylePreferencesRef.current.line,
                   })}
                   onDraw={(drawing) => addElement({
                     id: uid("draw"), pageId: page.id, type: "draw", ...drawing,
-                    opacity: 1, color: "#2f6f55", strokeWidth: 2.5,
+                    ...stylePreferencesRef.current.draw,
                   })}
                 />
               </div>
