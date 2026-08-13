@@ -25,6 +25,7 @@ import {
   visualYToSourceY,
 } from "@/lib/editor-utils";
 import { exportPdf, FontExportError } from "@/lib/export-pdf";
+import { exportVisibleOnlyPdf } from "@/lib/export-visible-pdf";
 import {
   DEFAULT_EDITOR_STYLE_PREFERENCES,
   loadEditorStylePreferences,
@@ -143,7 +144,7 @@ export default function PdfEditor() {
   const [past, setPast] = useState<EditorSnapshot[]>([]);
   const [future, setFuture] = useState<EditorSnapshot[]>([]);
   const [loading, setLoading] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState<"standard" | "visible" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [signatureOpen, setSignatureOpen] = useState(false);
@@ -1040,21 +1041,25 @@ export default function PdfEditor() {
     setActivePageId(nextActivePageId);
   };
 
+  const savePdfDownload = (bytes: Uint8Array, suffix: string) => {
+    const blob = new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${fileName.replace(/\.pdf$/i, "") || "document"}-${suffix}.pdf`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const downloadPdf = async () => {
     if (!sourceBytes || !pages.length) return;
-    setExporting(true);
+    setExporting("standard");
     setNotice(null);
     try {
       const bytes = await exportPdf(sourceBytes, pages, elements);
-      const blob = new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `${fileName.replace(/\.pdf$/i, "") || "document"}-edited.pdf`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      savePdfDownload(bytes, "edited");
       setNotice("Your edited PDF has been downloaded");
     } catch (caught) {
       const fontError = caught instanceof FontExportError;
@@ -1065,7 +1070,33 @@ export default function PdfEditor() {
           : "Export failed. This PDF may have restrictions that prevent editing.",
       );
     } finally {
-      setExporting(false);
+      setExporting(null);
+    }
+  };
+
+  const downloadVisibleOnlyPdf = async () => {
+    if (!sourceBytes || !pages.length) return;
+    setExporting("visible");
+    setNotice("Preparing image-only visible PDF…");
+    try {
+      const bytes = await exportVisibleOnlyPdf(
+        sourceBytes,
+        pages,
+        elements,
+        (pageNumber, pageCount) => setNotice(`Flattening page ${pageNumber} of ${pageCount}…`),
+      );
+      savePdfDownload(bytes, "visible-only");
+      setNotice("Your visible-only image PDF has been downloaded. Hidden PDF objects were not retained.");
+    } catch (caught) {
+      const fontError = caught instanceof FontExportError;
+      if (!fontError) console.error(caught);
+      setNotice(
+        fontError
+          ? caught.message
+          : "Visible-only export failed while rendering this PDF.",
+      );
+    } finally {
+      setExporting(null);
     }
   };
 
@@ -1135,6 +1166,7 @@ export default function PdfEditor() {
           });
         }}
         onExport={() => void downloadPdf()}
+        onExportVisible={() => void downloadVisibleOnlyPdf()}
       />
 
       <div className="editor-workspace">

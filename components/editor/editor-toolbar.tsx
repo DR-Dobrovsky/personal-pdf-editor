@@ -24,7 +24,7 @@ interface EditorToolbarProps {
   zoom: number;
   canUndo: boolean;
   canRedo: boolean;
-  exporting: boolean;
+  exporting: "standard" | "visible" | null;
   guidesEnabled: boolean;
   onTool: (tool: EditorTool) => void;
   onUndo: () => void;
@@ -34,6 +34,7 @@ interface EditorToolbarProps {
   onSignature: () => void;
   onToggleGuides: () => void;
   onExport: () => void;
+  onExportVisible: () => void;
 }
 
 const TOOLS = [
@@ -61,6 +62,7 @@ export default function EditorToolbar({
   onSignature,
   onToggleGuides,
   onExport,
+  onExportVisible,
 }: EditorToolbarProps) {
   const imageInput = useRef<HTMLInputElement>(null);
 
@@ -119,10 +121,38 @@ export default function EditorToolbar({
           <span>{Math.round(zoom * 100)}%</span>
           <button onClick={() => onZoom(Math.min(2, zoom + 0.1))} aria-label="Zoom in"><Plus size={16} /></button>
         </div>
-        <button className="primary-button export-button" disabled={exporting} onClick={onExport}>
-          {exporting ? <span className="spinner spinner-light" /> : <Download size={17} />}
-          <span>{exporting ? "Exporting…" : "Export PDF"}</span>
-        </button>
+        <div className="export-actions">
+          <button
+            className="secondary-button export-button visible-export-button"
+            disabled={exporting !== null}
+            onClick={onExportVisible}
+            title="Export only the visible appearance as image-only pages. Hidden text, layers, forms, links, and metadata are not retained; text will not be searchable or selectable."
+            aria-label="Export visible only flattened image PDF"
+            aria-describedby="visible-export-description"
+          >
+            {exporting === "visible" ? <span className="spinner" /> : <Download size={17} />}
+            <span className="export-button-label">
+              {exporting === "visible" ? "Flattening…" : "Visible only"}
+              {exporting !== "visible" && <small>Image-only</small>}
+            </span>
+            <span id="visible-export-description" className="visually-hidden">
+              Hidden text, layers, forms, links, and source metadata are not retained. Text will not be searchable or selectable.
+            </span>
+          </button>
+          <button
+            className="primary-button export-button"
+            disabled={exporting !== null}
+            onClick={onExport}
+            title="Export a standard searchable PDF"
+            aria-label="Export standard searchable PDF"
+          >
+            {exporting === "standard" ? <span className="spinner spinner-light" /> : <Download size={17} />}
+            <span className="export-button-label">
+              {exporting === "standard" ? "Exporting…" : "Standard PDF"}
+              {exporting !== "standard" && <small>Searchable</small>}
+            </span>
+          </button>
+        </div>
       </div>
     </div>
   );
