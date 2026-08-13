@@ -20,7 +20,7 @@ import {
   uid,
   visualYToSourceY,
 } from "@/lib/editor-utils";
-import { exportPdf } from "@/lib/export-pdf";
+import { exportPdf, FontExportError } from "@/lib/export-pdf";
 import {
   DEFAULT_EDITOR_STYLE_PREFERENCES,
   loadEditorStylePreferences,
@@ -760,10 +760,10 @@ export default function PdfEditor() {
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       setNotice("Your edited PDF has been downloaded");
     } catch (caught) {
-      const aeonikFontError = caught instanceof Error && caught.message.includes("Aeonik Pro");
-      if (!aeonikFontError) console.error(caught);
+      const fontError = caught instanceof FontExportError;
+      if (!fontError) console.error(caught);
       setNotice(
-        aeonikFontError
+        fontError
           ? caught.message
           : "Export failed. This PDF may have restrictions that prevent editing.",
       );
