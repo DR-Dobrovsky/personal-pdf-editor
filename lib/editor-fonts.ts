@@ -4,7 +4,7 @@ type PdfFontSource =
   | { kind: "standard"; family: "sans" | "serif" | "mono" }
   | { kind: "custom"; regularUrl: string };
 
-type EditorFontGroup = "Aeonik" | "Hanken Grotesk" | "Inter" | "Standard";
+type EditorFontGroup = "Aeonik" | "Hanken Grotesk" | "Inter" | "Roboto" | "Standard";
 
 interface EditorFontDefinition {
   id: TextFontFamily;
@@ -36,6 +36,9 @@ const hankenGroteskFace = (id: TextFontFamily, filename: string) =>
 
 const interFace = (id: TextFontFamily, filename: string) =>
   customFace(id, "Inter", filename);
+
+const robotoFace = (id: TextFontFamily, filename: string) =>
+  customFace(id, "Roboto", filename);
 
 export const EDITOR_FONTS: readonly EditorFontDefinition[] = [
   aeonikFace("Aeonik Pro", "AeonikPro-Regular.ttf"),
@@ -89,6 +92,24 @@ export const EDITOR_FONTS: readonly EditorFontDefinition[] = [
   interFace("Inter Extra Bold Italic", "Inter_18pt-ExtraBoldItalic.ttf"),
   interFace("Inter Black", "Inter_18pt-Black.ttf"),
   interFace("Inter Black Italic", "Inter_18pt-BlackItalic.ttf"),
+  robotoFace("Roboto Thin", "Roboto-Thin.ttf"),
+  robotoFace("Roboto Thin Italic", "Roboto-ThinItalic.ttf"),
+  robotoFace("Roboto Extra Light", "Roboto-ExtraLight.ttf"),
+  robotoFace("Roboto Extra Light Italic", "Roboto-ExtraLightItalic.ttf"),
+  robotoFace("Roboto Light", "Roboto-Light.ttf"),
+  robotoFace("Roboto Light Italic", "Roboto-LightItalic.ttf"),
+  robotoFace("Roboto Regular", "Roboto-Regular.ttf"),
+  robotoFace("Roboto Italic", "Roboto-Italic.ttf"),
+  robotoFace("Roboto Medium", "Roboto-Medium.ttf"),
+  robotoFace("Roboto Medium Italic", "Roboto-MediumItalic.ttf"),
+  robotoFace("Roboto Semi Bold", "Roboto-SemiBold.ttf"),
+  robotoFace("Roboto Semi Bold Italic", "Roboto-SemiBoldItalic.ttf"),
+  robotoFace("Roboto Bold", "Roboto-Bold.ttf"),
+  robotoFace("Roboto Bold Italic", "Roboto-BoldItalic.ttf"),
+  robotoFace("Roboto Extra Bold", "Roboto-ExtraBold.ttf"),
+  robotoFace("Roboto Extra Bold Italic", "Roboto-ExtraBoldItalic.ttf"),
+  robotoFace("Roboto Black", "Roboto-Black.ttf"),
+  robotoFace("Roboto Black Italic", "Roboto-BlackItalic.ttf"),
   {
     id: "Arial",
     label: "Arial",
@@ -127,6 +148,7 @@ const FONT_GROUPS: readonly { group: EditorFontGroup; label: string }[] = [
   { group: "Aeonik", label: "Aeonik family" },
   { group: "Hanken Grotesk", label: "Hanken Grotesk family" },
   { group: "Inter", label: "Inter family" },
+  { group: "Roboto", label: "Roboto family" },
   { group: "Standard", label: "Standard fonts" },
 ];
 
