@@ -161,7 +161,7 @@ export default function PropertyInspector({
               disabled={!editorFont(element.fontFamily).supportsBold}
               title={editorFont(element.fontFamily).supportsBold
                 ? "Bold"
-                : "This is a fixed Aeonik face. Select Aeonik Bold or Aeonik Bold Italic from the font menu."}
+                : "This is a fixed font face. Select a Bold or Bold Italic face from the font menu."}
               onClick={() => fieldChange({ bold: !element.bold } as Partial<EditorElement>)}
             >B</button>
             <div className="segmented-buttons">

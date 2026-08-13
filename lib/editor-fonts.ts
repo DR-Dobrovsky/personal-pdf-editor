@@ -4,7 +4,7 @@ type PdfFontSource =
   | { kind: "standard"; family: "sans" | "serif" | "mono" }
   | { kind: "custom"; regularUrl: string };
 
-type EditorFontGroup = "Aeonik" | "Standard";
+type EditorFontGroup = "Aeonik" | "Hanken Grotesk" | "Inter" | "Standard";
 
 interface EditorFontDefinition {
   id: TextFontFamily;
@@ -15,17 +15,27 @@ interface EditorFontDefinition {
   pdf: PdfFontSource;
 }
 
-const aeonikFace = (
+const customFace = (
   id: TextFontFamily,
+  group: Exclude<EditorFontGroup, "Standard">,
   filename: string,
 ): EditorFontDefinition => ({
   id,
   label: id,
-  group: "Aeonik",
+  group,
   cssFamily: `"${id}", Arial, sans-serif`,
   supportsBold: false,
   pdf: { kind: "custom", regularUrl: `/fonts/${filename}` },
 });
+
+const aeonikFace = (id: TextFontFamily, filename: string) =>
+  customFace(id, "Aeonik", filename);
+
+const hankenGroteskFace = (id: TextFontFamily, filename: string) =>
+  customFace(id, "Hanken Grotesk", filename);
+
+const interFace = (id: TextFontFamily, filename: string) =>
+  customFace(id, "Inter", filename);
 
 export const EDITOR_FONTS: readonly EditorFontDefinition[] = [
   aeonikFace("Aeonik Pro", "AeonikPro-Regular.ttf"),
@@ -43,6 +53,42 @@ export const EDITOR_FONTS: readonly EditorFontDefinition[] = [
   aeonikFace("Aeonik Black Italic", "Aeonik-BlackItalic.ttf"),
   aeonikFace("Aeonik Overview Regular", "Aeonik-Overview-Regular.ttf"),
   aeonikFace("Aeonik Overview Medium", "Aeonik-Overview-Medium.ttf"),
+  hankenGroteskFace("Hanken Grotesk Thin", "HankenGrotesk-Thin.ttf"),
+  hankenGroteskFace("Hanken Grotesk Thin Italic", "HankenGrotesk-ThinItalic.ttf"),
+  hankenGroteskFace("Hanken Grotesk Extra Light", "HankenGrotesk-ExtraLight.ttf"),
+  hankenGroteskFace("Hanken Grotesk Extra Light Italic", "HankenGrotesk-ExtraLightItalic.ttf"),
+  hankenGroteskFace("Hanken Grotesk Light", "HankenGrotesk-Light.ttf"),
+  hankenGroteskFace("Hanken Grotesk Light Italic", "HankenGrotesk-LightItalic.ttf"),
+  hankenGroteskFace("Hanken Grotesk Regular", "HankenGrotesk-Regular.ttf"),
+  hankenGroteskFace("Hanken Grotesk Italic", "HankenGrotesk-Italic.ttf"),
+  hankenGroteskFace("Hanken Grotesk Medium", "HankenGrotesk-Medium.ttf"),
+  hankenGroteskFace("Hanken Grotesk Medium Italic", "HankenGrotesk-MediumItalic.ttf"),
+  hankenGroteskFace("Hanken Grotesk Semi Bold", "HankenGrotesk-SemiBold.ttf"),
+  hankenGroteskFace("Hanken Grotesk Semi Bold Italic", "HankenGrotesk-SemiBoldItalic.ttf"),
+  hankenGroteskFace("Hanken Grotesk Bold", "HankenGrotesk-Bold.ttf"),
+  hankenGroteskFace("Hanken Grotesk Bold Italic", "HankenGrotesk-BoldItalic.ttf"),
+  hankenGroteskFace("Hanken Grotesk Extra Bold", "HankenGrotesk-ExtraBold.ttf"),
+  hankenGroteskFace("Hanken Grotesk Extra Bold Italic", "HankenGrotesk-ExtraBoldItalic.ttf"),
+  hankenGroteskFace("Hanken Grotesk Black", "HankenGrotesk-Black.ttf"),
+  hankenGroteskFace("Hanken Grotesk Black Italic", "HankenGrotesk-BlackItalic.ttf"),
+  interFace("Inter Thin", "Inter_18pt-Thin.ttf"),
+  interFace("Inter Thin Italic", "Inter_18pt-ThinItalic.ttf"),
+  interFace("Inter Extra Light", "Inter_18pt-ExtraLight.ttf"),
+  interFace("Inter Extra Light Italic", "Inter_18pt-ExtraLightItalic.ttf"),
+  interFace("Inter Light", "Inter_18pt-Light.ttf"),
+  interFace("Inter Light Italic", "Inter_18pt-LightItalic.ttf"),
+  interFace("Inter Regular", "Inter_18pt-Regular.ttf"),
+  interFace("Inter Italic", "Inter_18pt-Italic.ttf"),
+  interFace("Inter Medium", "Inter_18pt-Medium.ttf"),
+  interFace("Inter Medium Italic", "Inter_18pt-MediumItalic.ttf"),
+  interFace("Inter Semi Bold", "Inter_18pt-SemiBold.ttf"),
+  interFace("Inter Semi Bold Italic", "Inter_18pt-SemiBoldItalic.ttf"),
+  interFace("Inter Bold", "Inter_18pt-Bold.ttf"),
+  interFace("Inter Bold Italic", "Inter_18pt-BoldItalic.ttf"),
+  interFace("Inter Extra Bold", "Inter_18pt-ExtraBold.ttf"),
+  interFace("Inter Extra Bold Italic", "Inter_18pt-ExtraBoldItalic.ttf"),
+  interFace("Inter Black", "Inter_18pt-Black.ttf"),
+  interFace("Inter Black Italic", "Inter_18pt-BlackItalic.ttf"),
   {
     id: "Arial",
     label: "Arial",
@@ -77,9 +123,16 @@ export const EDITOR_FONTS: readonly EditorFontDefinition[] = [
   },
 ];
 
-export const EDITOR_FONT_GROUPS = (["Aeonik", "Standard"] as const).map((group) => ({
+const FONT_GROUPS: readonly { group: EditorFontGroup; label: string }[] = [
+  { group: "Aeonik", label: "Aeonik family" },
+  { group: "Hanken Grotesk", label: "Hanken Grotesk family" },
+  { group: "Inter", label: "Inter family" },
+  { group: "Standard", label: "Standard fonts" },
+];
+
+export const EDITOR_FONT_GROUPS = FONT_GROUPS.map(({ group, label }) => ({
   group,
-  label: group === "Aeonik" ? "Aeonik family" : "Standard fonts",
+  label,
   fonts: EDITOR_FONTS.filter((font) => font.group === group),
 }));
 
