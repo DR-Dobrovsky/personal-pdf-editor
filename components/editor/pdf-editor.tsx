@@ -13,10 +13,14 @@ import {
   basePageDisplaySize,
   clamp,
   cloneSnapshot,
+  elementVisualBounds,
+  elementsVisualBounds,
   lineGeometryFromMetrics,
   pageDisplaySize,
   spaceAtVisualY,
   spaceVisualTop,
+  translateElement,
+  type VisualBounds,
   uid,
   visualYToSourceY,
 } from "@/lib/editor-utils";
@@ -79,8 +83,19 @@ const fitElementToPage = (
 };
 
 type EditorClipboard =
-  | { kind: "element"; element: EditorElement }
+  | { kind: "elements"; elements: EditorElement[]; primaryId: string }
   | { kind: "space"; pageId: string; space: SpaceBand };
+
+type AlignmentAction =
+  | "left"
+  | "horizontal-center"
+  | "right"
+  | "top"
+  | "vertical-middle"
+  | "bottom"
+  | "baseline"
+  | "distribute-horizontal"
+  | "distribute-vertical";
 
 type PdfJsAnnotation = {
   annotationType?: number;
@@ -136,6 +151,7 @@ export default function PdfEditor() {
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
   const pagesRef = useRef(pages);
   const elementsRef = useRef(elements);
+  const selectionRef = useRef(selection);
   const stylePreferencesRef = useRef(DEFAULT_EDITOR_STYLE_PREFERENCES);
   const clipboardRef = useRef<EditorClipboard | null>(null);
   const pasteSequenceRef = useRef<{ pageId: string | null; count: number }>({
@@ -145,10 +161,21 @@ export default function PdfEditor() {
 
   useEffect(() => { pagesRef.current = pages; }, [pages]);
   useEffect(() => { elementsRef.current = elements; }, [elements]);
+  useEffect(() => { selectionRef.current = selection; }, [selection]);
   useEffect(() => {
     stylePreferencesRef.current = loadEditorStylePreferences();
   }, []);
   useEffect(() => () => { void loadingTaskRef.current?.destroy(); }, []);
+
+  const updateSelection = useCallback((next: EditorSelection) => {
+    selectionRef.current = next;
+    setSelection(next);
+  }, []);
+
+  const updateElements = useCallback((next: EditorElement[]) => {
+    elementsRef.current = next;
+    setElements(next);
+  }, []);
 
   const snapshot = useCallback(
     () => cloneSnapshot({ pages: pagesRef.current, elements: elementsRef.current }),
@@ -162,19 +189,22 @@ export default function PdfEditor() {
   }, [snapshot]);
 
   const restore = useCallback((value: EditorSnapshot) => {
+    pagesRef.current = value.pages;
+    elementsRef.current = value.elements;
     setPages(value.pages);
     setElements(value.elements);
-    setSelection(null);
+    updateSelection(null);
     setEditingTextId(null);
     if (!value.pages.some(({ id }) => id === activePageId)) {
       setActivePageId(value.pages[0]?.id ?? "");
     }
-  }, [activePageId]);
+  }, [activePageId, updateSelection]);
 
   const undo = useCallback(() => {
     const previous = past.at(-1);
     if (!previous) return;
-    setFuture((items) => [snapshot(), ...items].slice(0, 50));
+    const current = snapshot();
+    setFuture((items) => [current, ...items].slice(0, 50));
     setPast((items) => items.slice(0, -1));
     restore(previous);
   }, [past, restore, snapshot]);
@@ -182,7 +212,8 @@ export default function PdfEditor() {
   const redo = useCallback(() => {
     const next = future[0];
     if (!next) return;
-    setPast((items) => [...items, snapshot()].slice(-50));
+    const current = snapshot();
+    setPast((items) => [...items, current].slice(-50));
     setFuture((items) => items.slice(1));
     restore(next);
   }, [future, restore, snapshot]);
@@ -195,12 +226,12 @@ export default function PdfEditor() {
     const bottom = top + space.height;
 
     pushHistory();
-    setPages((items) => items.map((item) =>
+    const nextPages = pagesRef.current.map((item) =>
       item.id === pageId
         ? { ...item, spaces: item.spaces.filter(({ id }) => id !== spaceId) }
         : item,
-    ));
-    setElements((items) => items.map((element) => {
+    );
+    const nextElements = elementsRef.current.map((element) => {
       if (element.pageId !== pageId) return element;
       const bounds = elementVerticalBounds(element);
       if (bounds.top < top) return element;
@@ -208,10 +239,13 @@ export default function PdfEditor() {
         ? element.y - space.height
         : element.y + top - bounds.top;
       return { ...element, y: Math.max(0, y) } as EditorElement;
-    }));
-    setSelection(null);
+    });
+    pagesRef.current = nextPages;
+    setPages(nextPages);
+    updateElements(nextElements);
+    updateSelection(null);
     setEditingTextId(null);
-  }, [pushHistory]);
+  }, [pushHistory, updateElements, updateSelection]);
 
   const updateSpaceHeight = useCallback((pageId: string, spaceId: string, requestedHeight: number) => {
     if (!Number.isFinite(requestedHeight)) return;
@@ -269,15 +303,23 @@ export default function PdfEditor() {
   }, []);
 
   const copySelected = useCallback(() => {
-    if (!selection) return false;
-    if (selection.kind === "element") {
-      const element = elementsRef.current.find(({ id }) => id === selection.id);
-      if (!element) return false;
-      clipboardRef.current = { kind: "element", element: structuredClone(element) };
-      setNotice("Element copied — press Ctrl/Cmd+V to paste");
+    const currentSelection = selectionRef.current;
+    if (!currentSelection) return false;
+    if (currentSelection.kind === "elements") {
+      const selectedIds = new Set(currentSelection.ids);
+      const selected = elementsRef.current
+        .filter(({ id }) => selectedIds.has(id))
+        .map((element) => structuredClone(element));
+      if (selected.length === 0) return false;
+      clipboardRef.current = {
+        kind: "elements",
+        elements: selected,
+        primaryId: currentSelection.primaryId,
+      };
+      setNotice(`${selected.length === 1 ? "Element" : `${selected.length} elements`} copied — press Ctrl/Cmd+V to paste`);
     } else {
-      const page = pagesRef.current.find(({ id }) => id === selection.pageId);
-      const space = page?.spaces.find(({ id }) => id === selection.id);
+      const page = pagesRef.current.find(({ id }) => id === currentSelection.pageId);
+      const space = page?.spaces.find(({ id }) => id === currentSelection.id);
       if (!page || !space) return false;
       clipboardRef.current = {
         kind: "space",
@@ -288,12 +330,14 @@ export default function PdfEditor() {
     }
     pasteSequenceRef.current = { pageId: null, count: 0 };
     return true;
-  }, [selection]);
+  }, []);
 
   const pasteClipboard = useCallback(() => {
     const payload = clipboardRef.current;
     if (!payload) return false;
-    const sourcePageId = payload.kind === "element" ? payload.element.pageId : payload.pageId;
+    const sourcePageId = payload.kind === "elements"
+      ? payload.elements[0]?.pageId
+      : payload.pageId;
     const targetPage = pagesRef.current.find(({ id }) => id === activePageId)
       ?? pagesRef.current.find(({ id }) => id === sourcePageId)
       ?? pagesRef.current[0];
@@ -304,26 +348,51 @@ export default function PdfEditor() {
       : 1;
     const offset = sequence * 14;
 
-    if (payload.kind === "element") {
+    if (payload.kind === "elements") {
       const size = pageDisplaySize(targetPage);
-      const original = payload.element;
-      const fitted = fitElementToPage(original, size.width, size.height);
-      const pasted = {
-        ...fitted,
-        id: uid(original.type),
-        pageId: targetPage.id,
-        x: clamp(original.x + offset, 0, Math.max(0, size.width - fitted.width)),
-        y: clamp(original.y + offset, 0, Math.max(0, size.height - fitted.height)),
-      } as EditorElement;
+      const sourceElements = payload.elements.length === 1
+        ? [fitElementToPage(payload.elements[0], size.width, size.height)]
+        : payload.elements.map((element) => structuredClone(element));
+      const bounds = elementsVisualBounds(sourceElements);
+      if (!bounds) return false;
+      if (
+        sourceElements.length > 1
+        && (bounds.width > size.width || bounds.height > size.height)
+      ) {
+        setNotice("This group is larger than the target page and cannot be pasted.");
+        return true;
+      }
+      const deltaX = clamp(offset, -bounds.left, size.width - bounds.right);
+      const deltaY = clamp(offset, -bounds.top, size.height - bounds.bottom);
+      let pastedPrimaryId: string | undefined;
+      const pasted = sourceElements.map((original) => {
+        const id = uid(original.type);
+        if (original.id === payload.primaryId) pastedPrimaryId = id;
+        return translateElement(
+          {
+            ...structuredClone(original),
+            id,
+            pageId: targetPage.id,
+          } as EditorElement,
+          deltaX,
+          deltaY,
+          size.width,
+          size.height,
+        );
+      });
       pushHistory();
-      const nextElements = [...elementsRef.current, pasted];
-      elementsRef.current = nextElements;
-      setElements(nextElements);
-      setSelection({ kind: "element", id: pasted.id });
+      updateElements([...elementsRef.current, ...pasted]);
+      const ids = pasted.map(({ id }) => id);
+      updateSelection({
+        kind: "elements",
+        pageId: targetPage.id,
+        ids,
+        primaryId: pastedPrimaryId ?? ids.at(-1)!,
+      });
       setEditingTextId(null);
       setTool("select");
       setActivePageId(targetPage.id);
-      setNotice("Element pasted");
+      setNotice(`${pasted.length === 1 ? "Element" : `${pasted.length} elements`} pasted`);
     } else {
       if (targetPage.hasFormFields) {
         setNotice("This page contains interactive form fields. Fill or flatten the form before pasting Space.");
@@ -351,10 +420,9 @@ export default function PdfEditor() {
       );
       pushHistory();
       pagesRef.current = nextPages;
-      elementsRef.current = nextElements;
       setPages(nextPages);
-      setElements(nextElements);
-      setSelection({ kind: "space", pageId: targetPage.id, id: pastedSpace.id });
+      updateElements(nextElements);
+      updateSelection({ kind: "space", pageId: targetPage.id, id: pastedSpace.id });
       setEditingTextId(null);
       setTool("select");
       setActivePageId(targetPage.id);
@@ -363,48 +431,7 @@ export default function PdfEditor() {
 
     pasteSequenceRef.current = { pageId: targetPage.id, count: sequence };
     return true;
-  }, [activePageId, pushHistory]);
-
-  useEffect(() => {
-    const handleKeyboard = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const editingField = Boolean(
-        target instanceof HTMLInputElement
-        || target instanceof HTMLTextAreaElement
-        || target instanceof HTMLSelectElement
-        || target?.isContentEditable,
-      );
-      const shortcut = event.ctrlKey || event.metaKey;
-      const key = event.key.toLowerCase();
-      if (shortcut && key === "c" && !editingField) {
-        if (copySelected()) event.preventDefault();
-      } else if (shortcut && key === "v" && !editingField) {
-        if (pasteClipboard()) event.preventDefault();
-      } else if (shortcut && key === "z") {
-        event.preventDefault();
-        if (event.shiftKey) redo(); else undo();
-      } else if (shortcut && key === "y") {
-        event.preventDefault();
-        redo();
-      } else if (!editingField && (event.key === "Delete" || event.key === "Backspace") && selection) {
-        event.preventDefault();
-        if (selection.kind === "space") {
-          removeSpace(selection.pageId, selection.id);
-        } else {
-          pushHistory();
-          setElements((items) => items.filter(({ id }) => id !== selection.id));
-          setSelection(null);
-          setEditingTextId(null);
-        }
-      } else if (event.key === "Escape") {
-        setEditingTextId(null);
-        setSelection(null);
-        setTool("select");
-      }
-    };
-    window.addEventListener("keydown", handleKeyboard);
-    return () => window.removeEventListener("keydown", handleKeyboard);
-  }, [copySelected, pasteClipboard, pushHistory, redo, removeSpace, selection, undo]);
+  }, [activePageId, pushHistory, updateElements, updateSelection]);
 
   useEffect(() => {
     const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
@@ -519,11 +546,13 @@ export default function PdfEditor() {
       setPdfDocument(document);
       setSourceBytes(new Uint8Array(buffer));
       setFileName(file.name);
+      pagesRef.current = loadedPages;
+      elementsRef.current = [];
       setPages(loadedPages);
       setElements([]);
       setPast([]);
       setFuture([]);
-      setSelection(null);
+      updateSelection(null);
       setEditingTextId(null);
       clipboardRef.current = null;
       pasteSequenceRef.current = { pageId: null, count: 0 };
@@ -541,8 +570,13 @@ export default function PdfEditor() {
 
   const addElement = (element: EditorElement, startTextEditing = false) => {
     pushHistory();
-    setElements((items) => [...items, element]);
-    setSelection({ kind: "element", id: element.id });
+    updateElements([...elementsRef.current, element]);
+    updateSelection({
+      kind: "elements",
+      pageId: element.pageId,
+      ids: [element.id],
+      primaryId: element.id,
+    });
     setEditingTextId(startTextEditing ? element.id : null);
     setTool("select");
   };
@@ -557,7 +591,7 @@ export default function PdfEditor() {
       }
       const existing = spaceAtVisualY(page, point.y);
       if (existing) {
-        setSelection({ kind: "space", pageId: page.id, id: existing.id });
+        updateSelection({ kind: "space", pageId: page.id, id: existing.id });
         setTool("select");
         return;
       }
@@ -568,15 +602,18 @@ export default function PdfEditor() {
         height: DEFAULT_SPACE_HEIGHT,
       };
       pushHistory();
-      setPages((items) => items.map((item) =>
+      const nextPages = pagesRef.current.map((item) =>
         item.id === page.id ? { ...item, spaces: [...item.spaces, space] } : item,
-      ));
-      setElements((items) => items.map((element) =>
+      );
+      const nextElements = elementsRef.current.map((element) =>
         element.pageId === page.id && elementVerticalBounds(element).top >= point.y
           ? { ...element, y: element.y + space.height } as EditorElement
           : element,
-      ));
-      setSelection({ kind: "space", pageId: page.id, id: space.id });
+      );
+      pagesRef.current = nextPages;
+      setPages(nextPages);
+      updateElements(nextElements);
+      updateSelection({ kind: "space", pageId: page.id, id: space.id });
       setEditingTextId(null);
       setTool("select");
       return;
@@ -643,41 +680,284 @@ export default function PdfEditor() {
         saveEditorStylePreferences(preferences);
       }
     }
-    setElements((items) => items.map((candidate) =>
+    updateElements(elementsRef.current.map((candidate) =>
       candidate.id === id ? ({ ...candidate, ...patch } as EditorElement) : candidate,
     ));
   };
 
-  const deleteSelected = () => {
-    if (!selection) return;
-    if (selection.kind === "space") {
-      removeSpace(selection.pageId, selection.id);
+  const updateElementBatch = useCallback((updates: EditorElement[]) => {
+    const byId = new Map(updates.map((element) => [element.id, element]));
+    updateElements(elementsRef.current.map((element) => byId.get(element.id) ?? element));
+  }, [updateElements]);
+
+  const updateSelectedElements = (patch: Partial<EditorElement>) => {
+    const currentSelection = selectionRef.current;
+    if (currentSelection?.kind !== "elements") return;
+    const primary = elementsRef.current.find(({ id }) => id === currentSelection.primaryId);
+    if (primary) {
+      const preferences = rememberElementStyle(stylePreferencesRef.current, primary, patch);
+      if (preferences !== stylePreferencesRef.current) {
+        stylePreferencesRef.current = preferences;
+        saveEditorStylePreferences(preferences);
+      }
+    }
+    const ids = new Set(currentSelection.ids);
+    updateElements(elementsRef.current.map((element) =>
+      ids.has(element.id) ? ({ ...element, ...patch } as EditorElement) : element,
+    ));
+  };
+
+  const deleteSelected = useCallback(() => {
+    const currentSelection = selectionRef.current;
+    if (!currentSelection) return;
+    if (currentSelection.kind === "space") {
+      removeSpace(currentSelection.pageId, currentSelection.id);
       return;
     }
+    const ids = new Set(currentSelection.ids);
     pushHistory();
-    setElements((items) => items.filter(({ id }) => id !== selection.id));
-    setSelection(null);
+    updateElements(elementsRef.current.filter(({ id }) => !ids.has(id)));
+    updateSelection(null);
+    setEditingTextId(null);
+  }, [pushHistory, removeSpace, updateElements, updateSelection]);
+
+  const duplicateSelected = useCallback(() => {
+    const currentSelection = selectionRef.current;
+    if (currentSelection?.kind !== "elements") return false;
+    const ids = new Set(currentSelection.ids);
+    const originals = elementsRef.current.filter(({ id }) => ids.has(id));
+    const page = pagesRef.current.find(({ id }) => id === currentSelection.pageId);
+    if (!page || originals.length === 0) return false;
+    const size = pageDisplaySize(page);
+    const bounds = elementsVisualBounds(originals);
+    if (!bounds || bounds.width > size.width || bounds.height > size.height) {
+      setNotice("This group is larger than the page and cannot be duplicated.");
+      return true;
+    }
+    const deltaX = clamp(14, -bounds.left, size.width - bounds.right);
+    const deltaY = clamp(14, -bounds.top, size.height - bounds.bottom);
+    let duplicatePrimaryId: string | undefined;
+    const duplicates = originals.map((original) => {
+      const id = uid(original.type);
+      if (original.id === currentSelection.primaryId) duplicatePrimaryId = id;
+      return translateElement(
+        { ...structuredClone(original), id } as EditorElement,
+        deltaX,
+        deltaY,
+        size.width,
+        size.height,
+      );
+    });
+    pushHistory();
+    updateElements([...elementsRef.current, ...duplicates]);
+    const duplicateIds = duplicates.map(({ id }) => id);
+    updateSelection({
+      kind: "elements",
+      pageId: page.id,
+      ids: duplicateIds,
+      primaryId: duplicatePrimaryId ?? duplicateIds.at(-1)!,
+    });
+    setEditingTextId(null);
+    setTool("select");
+    return true;
+  }, [pushHistory, updateElements, updateSelection]);
+
+  const cutSelected = useCallback(() => {
+    if (!copySelected()) return false;
+    deleteSelected();
+    setNotice("Selection cut — press Ctrl/Cmd+V to paste");
+    return true;
+  }, [copySelected, deleteSelected]);
+
+  const nudgeSelected = useCallback((deltaX: number, deltaY: number) => {
+    const currentSelection = selectionRef.current;
+    if (currentSelection?.kind !== "elements") return false;
+    const ids = new Set(currentSelection.ids);
+    const selected = elementsRef.current.filter(({ id }) => ids.has(id));
+    const page = pagesRef.current.find(({ id }) => id === currentSelection.pageId);
+    const bounds = elementsVisualBounds(selected);
+    if (!page || !bounds) return false;
+    const size = pageDisplaySize(page);
+    const clampedX = clamp(deltaX, -bounds.left, size.width - bounds.right);
+    const clampedY = clamp(deltaY, -bounds.top, size.height - bounds.bottom);
+    if (clampedX === 0 && clampedY === 0) return true;
+    pushHistory();
+    updateElementBatch(selected.map((element) =>
+      translateElement(element, clampedX, clampedY, size.width, size.height),
+    ));
+    setEditingTextId(null);
+    return true;
+  }, [pushHistory, updateElementBatch]);
+
+  const selectAllCurrentPage = useCallback(() => {
+    const ids = elementsRef.current
+      .filter(({ pageId }) => pageId === activePageId)
+      .map(({ id }) => id);
+    updateSelection(ids.length > 0
+      ? { kind: "elements", pageId: activePageId, ids, primaryId: ids.at(-1)! }
+      : null);
+    setEditingTextId(null);
+  }, [activePageId, updateSelection]);
+
+  const alignSelected = (action: AlignmentAction) => {
+    const currentSelection = selectionRef.current;
+    if (currentSelection?.kind !== "elements" || currentSelection.ids.length < 2) return;
+    const ids = new Set(currentSelection.ids);
+    const selected = elementsRef.current.filter(({ id }) => ids.has(id));
+    const primary = selected.find(({ id }) => id === currentSelection.primaryId);
+    const page = pagesRef.current.find(({ id }) => id === currentSelection.pageId);
+    if (!primary || !page) return;
+    const size = pageDisplaySize(page);
+    const primaryBounds = elementVisualBounds(primary);
+    const translateWithinPage = (element: EditorElement, deltaX: number, deltaY: number) => {
+      const bounds = elementVisualBounds(element);
+      return translateElement(
+        element,
+        clamp(deltaX, -bounds.left, size.width - bounds.right),
+        clamp(deltaY, -bounds.top, size.height - bounds.bottom),
+        size.width,
+        size.height,
+      );
+    };
+    let updates: EditorElement[] = [];
+
+    if (action === "distribute-horizontal" || action === "distribute-vertical") {
+      if (selected.length < 3) return;
+      const horizontal = action === "distribute-horizontal";
+      const entries = selected.map((element) => ({ element, bounds: elementVisualBounds(element) }));
+      const start = (value: VisualBounds) => horizontal ? value.left : value.top;
+      const end = (value: VisualBounds) => horizontal ? value.right : value.bottom;
+      const extent = (value: VisualBounds) => horizontal ? value.width : value.height;
+      const startEntry = entries.reduce((outer, candidate) => {
+        const difference = start(candidate.bounds) - start(outer.bounds);
+        return difference < 0 || (difference === 0 && end(candidate.bounds) < end(outer.bounds))
+          ? candidate
+          : outer;
+      });
+      const endEntry = entries.reduce((outer, candidate) => {
+        const difference = end(candidate.bounds) - end(outer.bounds);
+        const startDifference = start(candidate.bounds) - start(outer.bounds);
+        return difference > 0
+          || (difference === 0 && startDifference > 0)
+          || (difference === 0 && startDifference === 0 && candidate.element.id !== outer.element.id)
+          ? candidate
+          : outer;
+      });
+      if (startEntry.element.id === endEntry.element.id) return;
+      const middleEntries = entries
+        .filter(({ element }) => element.id !== startEntry.element.id && element.id !== endEntry.element.id)
+        .sort((left, right) => start(left.bounds) - start(right.bounds));
+      const span = end(endEntry.bounds) - start(startEntry.bounds);
+      const occupied = entries.reduce((total, { bounds }) => total + extent(bounds), 0);
+      const gap = (span - occupied) / (entries.length - 1);
+      let cursor = end(startEntry.bounds) + gap;
+      updates = middleEntries.map(({ element, bounds }) => {
+        const delta = cursor - start(bounds);
+        cursor += extent(bounds) + gap;
+        return translateWithinPage(element, horizontal ? delta : 0, horizontal ? 0 : delta);
+      });
+    } else {
+      if (action === "baseline" && selected.some(({ type }) => type !== "text")) return;
+      updates = selected
+        .filter(({ id }) => id !== primary.id)
+        .map((element) => {
+          const bounds = elementVisualBounds(element);
+          let deltaX = 0;
+          let deltaY = 0;
+          if (action === "left") deltaX = primaryBounds.left - bounds.left;
+          if (action === "horizontal-center") {
+            deltaX = primaryBounds.left + primaryBounds.width / 2 - bounds.left - bounds.width / 2;
+          }
+          if (action === "right") deltaX = primaryBounds.right - bounds.right;
+          if (action === "top") deltaY = primaryBounds.top - bounds.top;
+          if (action === "vertical-middle") {
+            deltaY = primaryBounds.top + primaryBounds.height / 2 - bounds.top - bounds.height / 2;
+          }
+          if (action === "bottom") deltaY = primaryBounds.bottom - bounds.bottom;
+          if (action === "baseline" && element.type === "text" && primary.type === "text") {
+            deltaY = primary.y + primary.fontSize - element.y - element.fontSize;
+          }
+          return translateWithinPage(element, deltaX, deltaY);
+        });
+    }
+    if (updates.length === 0) return;
+    pushHistory();
+    updateElementBatch(updates);
     setEditingTextId(null);
   };
 
-  const duplicateSelected = () => {
-    if (selection?.kind !== "element") return;
-    const original = elementsRef.current.find(({ id }) => id === selection.id);
-    if (!original) return;
-    const duplicate = { ...structuredClone(original), id: uid(original.type), x: original.x + 14, y: original.y + 14 } as EditorElement;
-    addElement(duplicate);
-  };
+  useEffect(() => {
+    const handleKeyboard = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editingField = Boolean(
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable,
+      );
+      if (editingField) return;
+      const shortcut = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (shortcut && key === "c") {
+        if (copySelected()) event.preventDefault();
+      } else if (shortcut && key === "x") {
+        if (cutSelected()) event.preventDefault();
+      } else if (shortcut && key === "v") {
+        if (pasteClipboard()) event.preventDefault();
+      } else if (shortcut && key === "d") {
+        if (duplicateSelected()) event.preventDefault();
+      } else if (shortcut && key === "a") {
+        event.preventDefault();
+        selectAllCurrentPage();
+      } else if (shortcut && key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redo(); else undo();
+      } else if (shortcut && key === "y") {
+        event.preventDefault();
+        redo();
+      } else if (!shortcut && !event.altKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+        const amount = event.shiftKey ? 10 : 1;
+        const moved = event.key === "ArrowLeft"
+          ? nudgeSelected(-amount, 0)
+          : event.key === "ArrowRight"
+            ? nudgeSelected(amount, 0)
+            : event.key === "ArrowUp"
+              ? nudgeSelected(0, -amount)
+              : nudgeSelected(0, amount);
+        if (moved) event.preventDefault();
+      } else if ((event.key === "Delete" || event.key === "Backspace") && selectionRef.current) {
+        event.preventDefault();
+        deleteSelected();
+      } else if (event.key === "Escape") {
+        setEditingTextId(null);
+        updateSelection(null);
+        setTool("select");
+      }
+    };
+    window.addEventListener("keydown", handleKeyboard);
+    return () => window.removeEventListener("keydown", handleKeyboard);
+  }, [
+    copySelected,
+    cutSelected,
+    deleteSelected,
+    duplicateSelected,
+    nudgeSelected,
+    pasteClipboard,
+    redo,
+    selectAllCurrentPage,
+    undo,
+    updateSelection,
+  ]);
 
   const movePage = (pageId: string, direction: -1 | 1) => {
     const index = pagesRef.current.findIndex(({ id }) => id === pageId);
     const destination = index + direction;
     if (index < 0 || destination < 0 || destination >= pagesRef.current.length) return;
     pushHistory();
-    setPages((items) => {
-      const copy = [...items];
-      [copy[index], copy[destination]] = [copy[destination], copy[index]];
-      return copy;
-    });
+    const nextPages = [...pagesRef.current];
+    [nextPages[index], nextPages[destination]] = [nextPages[destination], nextPages[index]];
+    pagesRef.current = nextPages;
+    setPages(nextPages);
   };
 
   const rotatePage = (pageId: string) => {
@@ -689,8 +969,10 @@ export default function PdfEditor() {
     }
     const oldSize = basePageDisplaySize(page);
     pushHistory();
-    setPages((items) => items.map((item) => item.id === pageId ? { ...item, rotation: (item.rotation + 90) % 360 } : item));
-    setElements((items) => items.map((element) => {
+    const nextPages = pagesRef.current.map((item) =>
+      item.id === pageId ? { ...item, rotation: (item.rotation + 90) % 360 } : item,
+    );
+    const nextElements = elementsRef.current.map((element) => {
       if (element.pageId !== pageId) return element;
       const rotated = {
         ...element,
@@ -707,7 +989,10 @@ export default function PdfEditor() {
         } as EditorElement;
       }
       return rotated;
-    }));
+    });
+    pagesRef.current = nextPages;
+    setPages(nextPages);
+    updateElements(nextElements);
   };
 
   const duplicatePage = (pageId: string) => {
@@ -726,8 +1011,16 @@ export default function PdfEditor() {
       .filter((element) => element.pageId === pageId)
       .map((element) => ({ ...structuredClone(element), id: uid(element.type), pageId: copyId } as EditorElement));
     pushHistory();
-    setPages((items) => [...items.slice(0, index + 1), copy, ...items.slice(index + 1)]);
-    setElements((items) => [...items, ...copiedElements]);
+    const nextPages = [
+      ...pagesRef.current.slice(0, index + 1),
+      copy,
+      ...pagesRef.current.slice(index + 1),
+    ];
+    pagesRef.current = nextPages;
+    setPages(nextPages);
+    updateElements([...elementsRef.current, ...copiedElements]);
+    updateSelection(null);
+    setEditingTextId(null);
     setActivePageId(copyId);
   };
 
@@ -735,12 +1028,16 @@ export default function PdfEditor() {
     if (pagesRef.current.length <= 1) return;
     const index = pagesRef.current.findIndex(({ id }) => id === pageId);
     pushHistory();
-    setPages((items) => items.filter(({ id }) => id !== pageId));
-    setElements((items) => items.filter((element) => element.pageId !== pageId));
-    setSelection(null);
-    if (activePageId === pageId) {
-      setActivePageId(pagesRef.current[index + 1]?.id ?? pagesRef.current[index - 1]?.id ?? "");
-    }
+    const nextActivePageId = activePageId === pageId
+      ? pagesRef.current[index + 1]?.id ?? pagesRef.current[index - 1]?.id ?? ""
+      : activePageId;
+    const nextPages = pagesRef.current.filter(({ id }) => id !== pageId);
+    pagesRef.current = nextPages;
+    setPages(nextPages);
+    updateElements(elementsRef.current.filter((element) => element.pageId !== pageId));
+    updateSelection(null);
+    setEditingTextId(null);
+    setActivePageId(nextActivePageId);
   };
 
   const downloadPdf = async () => {
@@ -781,11 +1078,12 @@ export default function PdfEditor() {
     return <UploadScreen busy={loading} error={error} onFile={loadFile} />;
   }
 
-  const selectedElement = selection?.kind === "element"
-    ? elements.find(({ id }) => id === selection.id)
-    : undefined;
-  const selectedElementPage = selectedElement
-    ? pages.find(({ id }) => id === selectedElement.pageId)
+  const selectedElements = selection?.kind === "elements"
+    ? elements.filter(({ id }) => selection.ids.includes(id))
+    : [];
+  const selectedElement = selectedElements.length === 1 ? selectedElements[0] : undefined;
+  const selectedElementPage = selection?.kind === "elements"
+    ? pages.find(({ id }) => id === selection.pageId)
     : undefined;
   const selectedElementPageSize = selectedElementPage
     ? pageDisplaySize(selectedElementPage)
@@ -821,7 +1119,7 @@ export default function PdfEditor() {
         canRedo={future.length > 0}
         exporting={exporting}
         guidesEnabled={guidesEnabled}
-        onTool={(next) => { setTool(next); setSelection(null); setEditingTextId(null); }}
+        onTool={(next) => { setTool(next); updateSelection(null); setEditingTextId(null); }}
         onUndo={undo}
         onRedo={redo}
         onZoom={setZoom}
@@ -844,7 +1142,14 @@ export default function PdfEditor() {
           document={pdfDocument}
           pages={pages}
           activePageId={activePageId}
-          onSelect={(id) => { setActivePageId(id); document.getElementById(`stage-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }); }}
+          onSelect={(id) => {
+            if (id !== activePageId) {
+              updateSelection(null);
+              setEditingTextId(null);
+            }
+            setActivePageId(id);
+            document.getElementById(`stage-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }}
           onMove={movePage}
           onRotate={rotatePage}
           onDuplicate={duplicatePage}
@@ -863,29 +1168,107 @@ export default function PdfEditor() {
                   tool={tool}
                   guidesEnabled={guidesEnabled}
                   elements={elements.filter(({ pageId }) => pageId === page.id)}
-                  selectedElementId={selection?.kind === "element" ? selection.id : null}
+                  selectedElementIds={selection?.kind === "elements" && selection.pageId === page.id
+                    ? selection.ids
+                    : []}
+                  primaryElementId={selection?.kind === "elements" && selection.pageId === page.id
+                    ? selection.primaryId
+                    : null}
                   selectedSpaceId={selection?.kind === "space" && selection.pageId === page.id ? selection.id : null}
                   editingTextId={editingTextId}
-                  onActivate={() => setActivePageId(page.id)}
-                  onSelectElement={(id) => {
+                  onActivate={() => {
+                    if (activePageId !== page.id) {
+                      updateSelection(null);
+                      setEditingTextId(null);
+                    }
                     setActivePageId(page.id);
-                    setSelection(id ? { kind: "element", id } : null);
-                    if (id !== editingTextId) setEditingTextId(null);
+                  }}
+                  onSelectElement={(id, mode) => {
+                    setActivePageId(page.id);
+                    const current = selectionRef.current;
+                    if (mode === "toggle") {
+                      const currentIds = current?.kind === "elements" && current.pageId === page.id
+                        ? current.ids
+                        : [];
+                      const nextIds = currentIds.includes(id)
+                        ? currentIds.filter((candidate) => candidate !== id)
+                        : elementsRef.current
+                            .filter((element) => element.pageId === page.id
+                              && (currentIds.includes(element.id) || element.id === id))
+                            .map((element) => element.id);
+                      if (nextIds.length === 0) {
+                        updateSelection(null);
+                      } else {
+                        updateSelection({
+                          kind: "elements",
+                          pageId: page.id,
+                          ids: nextIds,
+                          primaryId: currentIds.includes(id)
+                            ? (current?.kind === "elements" && nextIds.includes(current.primaryId)
+                                ? current.primaryId
+                                : nextIds.at(-1)!)
+                            : id,
+                        });
+                      }
+                    } else if (
+                      mode === "only"
+                      || current?.kind !== "elements"
+                      || current.pageId !== page.id
+                      || !current.ids.includes(id)
+                    ) {
+                      updateSelection({ kind: "elements", pageId: page.id, ids: [id], primaryId: id });
+                    }
+                    setEditingTextId(null);
+                  }}
+                  onMarqueeSelect={(ids, mode) => {
+                    setActivePageId(page.id);
+                    const current = selectionRef.current;
+                    const currentIds = current?.kind === "elements" && current.pageId === page.id
+                      ? current.ids
+                      : [];
+                    let nextSet: Set<string>;
+                    if (mode === "replace") {
+                      nextSet = new Set(ids);
+                    } else if (mode === "add") {
+                      nextSet = new Set([...currentIds, ...ids]);
+                    } else {
+                      nextSet = new Set(currentIds);
+                      ids.forEach((id) => {
+                        if (nextSet.has(id)) nextSet.delete(id); else nextSet.add(id);
+                      });
+                    }
+                    const nextIds = elementsRef.current
+                      .filter((element) => element.pageId === page.id && nextSet.has(element.id))
+                      .map(({ id }) => id);
+                    if (nextIds.length === 0) {
+                      updateSelection(null);
+                    } else {
+                      const latestAdded = [...ids].reverse().find(
+                        (id) => nextSet.has(id) && (mode === "replace" || !currentIds.includes(id)),
+                      );
+                      const primaryId = latestAdded
+                        ?? (current?.kind === "elements" && nextSet.has(current.primaryId)
+                          ? current.primaryId
+                          : nextIds.at(-1)!);
+                      updateSelection({ kind: "elements", pageId: page.id, ids: nextIds, primaryId });
+                    }
+                    setEditingTextId(null);
                   }}
                   onSelectSpace={(id) => {
                     setActivePageId(page.id);
-                    setSelection({ kind: "space", pageId: page.id, id });
+                    updateSelection({ kind: "space", pageId: page.id, id });
                     setEditingTextId(null);
                   }}
                   onStartTextEditing={(id) => {
                     if (editingTextId === id) return;
                     pushHistory();
-                    setSelection({ kind: "element", id });
+                    updateSelection({ kind: "elements", pageId: page.id, ids: [id], primaryId: id });
                     setEditingTextId(id);
                   }}
                   onFinishTextEditing={() => setEditingTextId(null)}
                   onBeginMutation={pushHistory}
                   onUpdate={updateElement}
+                  onUpdateElements={updateElementBatch}
                   onResizeSpace={(id, height) => updateSpaceHeight(page.id, id, height)}
                   onPlace={(point) => placeElement(page, point)}
                   onLine={(line) => addElement({
@@ -904,13 +1287,20 @@ export default function PdfEditor() {
 
         <PropertyInspector
           element={selectedElement}
+          elements={selectedElements}
+          primaryId={selection?.kind === "elements" ? selection.primaryId : undefined}
           space={selectedSpace}
           spaceTop={selectedSpace && selectedSpacePage ? spaceVisualTop(selectedSpacePage, selectedSpace) : undefined}
           onBeginChange={pushHistory}
-          onChange={(patch) => selection?.kind === "element" && updateElement(selection.id, patch)}
+          onChange={(patch) => {
+            if (selection?.kind !== "elements") return;
+            if (selection.ids.length > 1) updateSelectedElements(patch);
+            else updateElement(selection.ids[0], patch);
+          }}
           onLineMetricsChange={(angle, length) => {
             if (
-              selection?.kind !== "element"
+              selection?.kind !== "elements"
+              || selection.ids.length !== 1
               || selectedElement?.type !== "line"
               || !selectedElementPageSize
             ) return;
@@ -921,14 +1311,16 @@ export default function PdfEditor() {
               selectedElementPageSize.width,
               selectedElementPageSize.height,
             );
-            updateElement(selection.id, geometry as Partial<EditorElement>);
+            updateElement(selection.ids[0], geometry as Partial<EditorElement>);
           }}
           onSpaceHeightChange={(height) => {
             if (selection?.kind === "space") updateSpaceHeight(selection.pageId, selection.id, height);
           }}
+          onAlign={alignSelected}
           onDelete={deleteSelected}
           onCopy={() => { copySelected(); }}
-          onDuplicate={duplicateSelected}
+          onCut={() => { cutSelected(); }}
+          onDuplicate={() => { duplicateSelected(); }}
         />
       </div>
 
