@@ -13,13 +13,17 @@ import type {
 import {
   basePageDisplaySize,
   clamp,
+  elementVisualBounds,
+  elementsVisualBounds,
   lineGeometry,
   orderedSpaces,
   pageDisplaySize,
   snapLineEndpoint,
   spaceVisualTop,
+  translateElement,
+  visualBoundsIntersect,
 } from "@/lib/editor-utils";
-import type { LineGeometry } from "@/lib/editor-utils";
+import type { LineGeometry, VisualBounds } from "@/lib/editor-utils";
 import { editorFont } from "@/lib/editor-fonts";
 
 const GUIDE_STEP = 6;
@@ -39,6 +43,9 @@ const snapGuidePoint = (point: Point, width: number, height: number): Point => (
   y: snapGuideValueWithin(point.y, 0, height),
 });
 
+type ElementSelectionMode = "replace" | "toggle" | "only";
+type MarqueeSelectionMode = "replace" | "add" | "toggle";
+
 interface PdfPageProps {
   document: PDFDocumentProxy;
   page: EditorPage;
@@ -47,16 +54,19 @@ interface PdfPageProps {
   tool: EditorTool;
   guidesEnabled: boolean;
   elements: EditorElement[];
-  selectedElementId: string | null;
+  selectedElementIds: string[];
+  primaryElementId: string | null;
   selectedSpaceId: string | null;
   editingTextId: string | null;
   onActivate: () => void;
-  onSelectElement: (id: string | null) => void;
+  onSelectElement: (id: string, mode: ElementSelectionMode) => void;
+  onMarqueeSelect: (ids: string[], mode: MarqueeSelectionMode) => void;
   onSelectSpace: (id: string) => void;
   onStartTextEditing: (id: string) => void;
   onFinishTextEditing: () => void;
   onBeginMutation: () => void;
   onUpdate: (id: string, patch: Partial<EditorElement>) => void;
+  onUpdateElements: (updates: EditorElement[]) => void;
   onResizeSpace: (id: string, height: number) => void;
   onPlace: (point: Point) => void;
   onLine: (line: LineGeometry) => void;
@@ -71,16 +81,19 @@ export default function PdfPage({
   tool,
   guidesEnabled,
   elements,
-  selectedElementId,
+  selectedElementIds,
+  primaryElementId,
   selectedSpaceId,
   editingTextId,
   onActivate,
   onSelectElement,
+  onMarqueeSelect,
   onSelectSpace,
   onStartTextEditing,
   onFinishTextEditing,
   onBeginMutation,
   onUpdate,
+  onUpdateElements,
   onResizeSpace,
   onPlace,
   onLine,
@@ -97,14 +110,29 @@ export default function PdfPage({
   const [draft, setDraft] = useState<Point[] | null>(null);
   const [lineDraft, setLineDraft] = useState<{ start: Point; end: Point } | null>(null);
   const [guidePoint, setGuidePoint] = useState<Point | null>(null);
+  const [marquee, setMarquee] = useState<{
+    start: Point;
+    current: Point;
+    mode: MarqueeSelectionMode;
+  } | null>(null);
   const [pixelRatio, setPixelRatio] = useState(() =>
     typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
   );
   const draftRef = useRef<Point[] | null>(null);
   const lineDraftRef = useRef<{ start: Point; end: Point } | null>(null);
+  const marqueeRef = useRef<{
+    start: Point;
+    current: Point;
+    mode: MarqueeSelectionMode;
+  } | null>(null);
   const totalRotation = page.originalRotation + page.rotation;
   const baseSize = basePageDisplaySize(page);
   const size = pageDisplaySize(page);
+  const selectedIdSet = new Set(selectedElementIds);
+  const selectedElements = elements.filter(({ id }) => selectedIdSet.has(id));
+  const unionBounds = selectedElements.length > 1
+    ? elementsVisualBounds(selectedElements)
+    : null;
 
   useEffect(() => {
     const updatePixelRatio = () => {
@@ -272,7 +300,16 @@ export default function PdfPage({
             setLineDraft(lineDraftRef.current);
             event.currentTarget.setPointerCapture(event.pointerId);
           } else if (tool === "select") {
-            onSelectElement(null);
+            const start = relativePoint(event);
+            const mode: MarqueeSelectionMode = event.metaKey || event.ctrlKey
+              ? "toggle"
+              : event.shiftKey
+                ? "add"
+                : "replace";
+            marqueeRef.current = { start, current: start, mode };
+            setMarquee(marqueeRef.current);
+            if (mode === "replace") onMarqueeSelect([], "replace");
+            event.currentTarget.setPointerCapture(event.pointerId);
           }
         }}
         onClick={(event) => {
@@ -283,6 +320,12 @@ export default function PdfPage({
           }
         }}
         onPointerMove={(event) => {
+          if (marqueeRef.current) {
+            const next = relativePoint(event);
+            marqueeRef.current = { ...marqueeRef.current, current: next };
+            setMarquee(marqueeRef.current);
+            return;
+          }
           if (guidesEnabled) {
             setGuidePoint(
               tool === "text" || tool === "highlight" || tool === "redact"
@@ -308,6 +351,36 @@ export default function PdfPage({
           setDraft(draftRef.current);
         }}
         onPointerUp={(event) => {
+          const marqueeInteraction = marqueeRef.current;
+          if (marqueeInteraction) {
+            const current = relativePoint(event);
+            marqueeRef.current = null;
+            setMarquee(null);
+            if (Math.hypot(
+              current.x - marqueeInteraction.start.x,
+              current.y - marqueeInteraction.start.y,
+            ) >= 2) {
+              const left = Math.min(marqueeInteraction.start.x, current.x);
+              const top = Math.min(marqueeInteraction.start.y, current.y);
+              const right = Math.max(marqueeInteraction.start.x, current.x);
+              const bottom = Math.max(marqueeInteraction.start.y, current.y);
+              const bounds: VisualBounds = {
+                left,
+                top,
+                right,
+                bottom,
+                width: right - left,
+                height: bottom - top,
+              };
+              onMarqueeSelect(
+                elements
+                  .filter((element) => visualBoundsIntersect(elementVisualBounds(element), bounds))
+                  .map(({ id }) => id),
+                marqueeInteraction.mode,
+              );
+            }
+            return;
+          }
           if (lineDraftRef.current) {
             const start = lineDraftRef.current.start;
             const end = guidedLineEndpoint(start, event);
@@ -338,11 +411,15 @@ export default function PdfPage({
         onPointerCancel={() => {
           draftRef.current = null;
           lineDraftRef.current = null;
+          marqueeRef.current = null;
           setDraft(null);
           setLineDraft(null);
+          setMarquee(null);
           setGuidePoint(null);
         }}
-        onPointerLeave={() => setGuidePoint(null)}
+        onPointerLeave={() => {
+          if (!marqueeRef.current) setGuidePoint(null);
+        }}
       >
         <canvas ref={canvasRef} className="pdf-canvas" />
         {guidesEnabled && (
@@ -369,25 +446,72 @@ export default function PdfPage({
           ))}
         </div>
         <div className="elements-layer">
-          {elements.map((element) => (
-            <EditableElement
-              key={element.id}
-              element={element}
-              zoom={zoom}
-              selected={selectedElementId === element.id}
-              editing={editingTextId === element.id}
-              pageWidth={size.width}
-              pageHeight={size.height}
-              enabled={tool === "select"}
-              snapToGuides={guidesEnabled}
-              onGuidePoint={setGuidePoint}
-              onSelect={() => onSelectElement(element.id)}
-              onStartTextEditing={() => onStartTextEditing(element.id)}
-              onFinishTextEditing={onFinishTextEditing}
-              onBeginMutation={onBeginMutation}
-              onUpdate={(patch) => onUpdate(element.id, patch)}
+          {elements.map((element) => {
+            const selected = selectedIdSet.has(element.id);
+            return (
+              <EditableElement
+                key={element.id}
+                element={element}
+                zoom={zoom}
+                selected={selected}
+                multiSelected={selectedElementIds.length > 1}
+                showHandles={selected && selectedElementIds.length === 1}
+                selectedElements={selectedElements}
+                editing={editingTextId === element.id && selectedElementIds.length === 1}
+                pageWidth={size.width}
+                pageHeight={size.height}
+                enabled={tool === "select"}
+                snapToGuides={guidesEnabled}
+                onGuidePoint={setGuidePoint}
+                onSelect={(mode) => onSelectElement(element.id, mode)}
+                onStartTextEditing={() => onStartTextEditing(element.id)}
+                onFinishTextEditing={onFinishTextEditing}
+                onBeginMutation={onBeginMutation}
+                onUpdate={(patch) => onUpdate(element.id, patch)}
+                onUpdateElements={onUpdateElements}
+              />
+            );
+          })}
+          {selectedElements.length > 1 && selectedElements.map((element) => {
+            const bounds = elementVisualBounds(element);
+            return (
+              <span
+                key={`selection-${element.id}`}
+                className={`multi-member-outline ${primaryElementId === element.id ? "is-primary" : ""}`}
+                style={{
+                  left: bounds.left * zoom,
+                  top: bounds.top * zoom,
+                  width: Math.max(1, bounds.width * zoom),
+                  height: Math.max(1, bounds.height * zoom),
+                }}
+                aria-hidden="true"
+              />
+            );
+          })}
+          {unionBounds && (
+            <span
+              className="multi-union-outline"
+              style={{
+                left: unionBounds.left * zoom,
+                top: unionBounds.top * zoom,
+                width: Math.max(1, unionBounds.width * zoom),
+                height: Math.max(1, unionBounds.height * zoom),
+              }}
+              aria-hidden="true"
             />
-          ))}
+          )}
+          {marquee && (
+            <span
+              className="selection-marquee"
+              style={{
+                left: Math.min(marquee.start.x, marquee.current.x) * zoom,
+                top: Math.min(marquee.start.y, marquee.current.y) * zoom,
+                width: Math.abs(marquee.current.x - marquee.start.x) * zoom,
+                height: Math.abs(marquee.current.y - marquee.start.y) * zoom,
+              }}
+              aria-hidden="true"
+            />
+          )}
           {draft && (
             <svg className="draft-path" viewBox={`0 0 ${size.width} ${size.height}`} preserveAspectRatio="none">
               <polyline points={draft.map(({ x, y }) => `${x},${y}`).join(" ")} fill="none" stroke="#2f6f55" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -565,23 +689,30 @@ interface EditableElementProps {
   element: EditorElement;
   zoom: number;
   selected: boolean;
+  multiSelected: boolean;
+  showHandles: boolean;
+  selectedElements: EditorElement[];
   editing: boolean;
   pageWidth: number;
   pageHeight: number;
   enabled: boolean;
   snapToGuides: boolean;
-  onGuidePoint: (point: Point) => void;
-  onSelect: () => void;
+  onGuidePoint: (point: Point | null) => void;
+  onSelect: (mode: ElementSelectionMode) => void;
   onStartTextEditing: () => void;
   onFinishTextEditing: () => void;
   onBeginMutation: () => void;
   onUpdate: (patch: Partial<EditorElement>) => void;
+  onUpdateElements: (updates: EditorElement[]) => void;
 }
 
 function EditableElement({
   element,
   zoom,
   selected,
+  multiSelected,
+  showHandles,
+  selectedElements,
   editing,
   pageWidth,
   pageHeight,
@@ -593,14 +724,14 @@ function EditableElement({
   onFinishTextEditing,
   onBeginMutation,
   onUpdate,
+  onUpdateElements,
 }: EditableElementProps) {
   const dragRef = useRef<{
     pointerX: number;
     pointerY: number;
-    x: number;
-    y: number;
-    lineStart?: Point;
-    lineEnd?: Point;
+    elements: EditorElement[];
+    bounds: VisualBounds;
+    wasSelected: boolean;
     started: boolean;
   } | null>(null);
   const resizeRef = useRef<{
@@ -625,7 +756,7 @@ function EditableElement({
 
   return (
     <div
-      className={`editor-element element-${element.type} ${selected ? "is-selected" : ""} ${editing ? "is-editing" : ""}`}
+      className={`editor-element element-${element.type} ${selected ? "is-selected" : ""} ${multiSelected ? "is-multi" : ""} ${editing ? "is-editing" : ""}`}
       style={{
         left: element.x * zoom,
         top: element.y * zoom,
@@ -639,79 +770,75 @@ function EditableElement({
       onPointerDown={(event) => {
         if (!enabled || editing) return;
         event.stopPropagation();
-        onSelect();
+        const toggle = event.shiftKey || event.ctrlKey || event.metaKey;
+        onSelect(toggle ? "toggle" : "replace");
+        if (toggle) return;
+        const movingElements = selected ? selectedElements : [element];
+        const bounds = elementsVisualBounds(movingElements);
+        if (!bounds) return;
         dragRef.current = {
           pointerX: event.clientX,
           pointerY: event.clientY,
-          x: element.x,
-          y: element.y,
-          lineStart: element.type === "line"
-            ? {
-                x: element.x + element.start.x * element.width,
-                y: element.y + element.start.y * element.height,
-              }
-            : undefined,
-          lineEnd: element.type === "line"
-            ? {
-                x: element.x + element.end.x * element.width,
-                y: element.y + element.end.y * element.height,
-              }
-            : undefined,
+          elements: movingElements.map((candidate) => structuredClone(candidate)),
+          bounds,
+          wasSelected: selected,
           started: false,
         };
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
       onPointerMove={(event) => {
-        if (!dragRef.current) return;
-        if (!dragRef.current.started) {
-          dragRef.current.started = true;
+        const interaction = dragRef.current;
+        if (!interaction) return;
+        const pointerDeltaX = event.clientX - interaction.pointerX;
+        const pointerDeltaY = event.clientY - interaction.pointerY;
+        if (!interaction.started) {
+          if (Math.hypot(pointerDeltaX, pointerDeltaY) < 3) return;
+          interaction.started = true;
           onBeginMutation();
         }
-        const deltaX = (event.clientX - dragRef.current.pointerX) / zoom;
-        const deltaY = (event.clientY - dragRef.current.pointerY) / zoom;
-        if (element.type === "line" && dragRef.current.lineStart && dragRef.current.lineEnd) {
-          const start = dragRef.current.lineStart;
-          const end = dragRef.current.lineEnd;
-          const minimumStartX = start.x - Math.min(start.x, end.x);
-          const maximumStartX = start.x + pageWidth - Math.max(start.x, end.x);
-          const minimumStartY = start.y - Math.min(start.y, end.y);
-          const maximumStartY = start.y + pageHeight - Math.max(start.y, end.y);
-          const requestedStartX = start.x + deltaX;
-          const requestedStartY = start.y + deltaY;
-          const nextStart = {
-            x: snapToGuides && !event.altKey
-              ? snapGuideValueWithin(requestedStartX, minimumStartX, maximumStartX)
-              : clamp(requestedStartX, minimumStartX, maximumStartX),
-            y: snapToGuides && !event.altKey
-              ? snapGuideValueWithin(requestedStartY, minimumStartY, maximumStartY)
-              : clamp(requestedStartY, minimumStartY, maximumStartY),
-          };
-          const translatedEnd = {
-            x: end.x + nextStart.x - start.x,
-            y: end.y + nextStart.y - start.y,
-          };
-          onUpdate(lineGeometry(nextStart, translatedEnd, pageWidth, pageHeight) as Partial<EditorElement>);
-          return;
-        }
-        const maximumX = Math.max(0, pageWidth - element.width);
-        const maximumY = Math.max(0, pageHeight - element.height);
-        const requestedX = dragRef.current.x + deltaX;
-        const requestedY = dragRef.current.y + deltaY;
-        onUpdate({
-          x: snapToGuides && !event.altKey
-            ? snapGuideValueWithin(requestedX, 0, maximumX)
-            : clamp(requestedX, 0, maximumX),
-          y: snapToGuides && !event.altKey
-            ? snapGuideValueWithin(requestedY, 0, maximumY)
-            : clamp(requestedY, 0, maximumY),
-        } as Partial<EditorElement>);
+        const requestedDeltaX = pointerDeltaX / zoom;
+        const requestedDeltaY = pointerDeltaY / zoom;
+        const maximumLeft = Math.max(0, pageWidth - interaction.bounds.width);
+        const maximumTop = Math.max(0, pageHeight - interaction.bounds.height);
+        const requestedLeft = interaction.bounds.left + requestedDeltaX;
+        const requestedTop = interaction.bounds.top + requestedDeltaY;
+        const left = snapToGuides && !event.altKey
+          ? snapGuideValueWithin(requestedLeft, 0, maximumLeft)
+          : clamp(requestedLeft, 0, maximumLeft);
+        const top = snapToGuides && !event.altKey
+          ? snapGuideValueWithin(requestedTop, 0, maximumTop)
+          : clamp(requestedTop, 0, maximumTop);
+        const deltaX = left - interaction.bounds.left;
+        const deltaY = top - interaction.bounds.top;
+        if (snapToGuides) onGuidePoint({ x: left, y: top });
+        onUpdateElements(interaction.elements.map((candidate) =>
+          translateElement(candidate, deltaX, deltaY, pageWidth, pageHeight),
+        ));
       }}
       onPointerUp={() => {
         const interaction = dragRef.current;
         dragRef.current = null;
-        if (interaction && !interaction.started && selected && element.type === "text") {
+        if (
+          interaction
+          && !interaction.started
+          && interaction.wasSelected
+          && interaction.elements.length > 1
+        ) {
+          onSelect("only");
+        } else if (
+          interaction
+          && !interaction.started
+          && interaction.wasSelected
+          && interaction.elements.length === 1
+          && element.type === "text"
+        ) {
           onStartTextEditing();
         }
+        onGuidePoint(null);
+      }}
+      onPointerCancel={() => {
+        dragRef.current = null;
+        onGuidePoint(null);
       }}
     >
       {element.type === "text" && (editing ? (
@@ -762,7 +889,7 @@ function EditableElement({
         <LineContent element={element} zoom={zoom} enabled={enabled} />
       )}
       {(element.type === "highlight" || element.type === "redact") && <span style={{ background: element.color }} />}
-      {selected && !editing && element.type === "line" && (
+      {showHandles && !editing && element.type === "line" && (
         <>
           <LineEndpointHandle
             endpoint="start"
@@ -788,7 +915,7 @@ function EditableElement({
           />
         </>
       )}
-      {selected && !editing && element.type !== "line" && (
+      {showHandles && !editing && element.type !== "line" && (
         <button
           className="resize-handle"
           aria-label="Resize element"
@@ -815,6 +942,7 @@ function EditableElement({
             } as Partial<EditorElement>);
           }}
           onPointerUp={() => { resizeRef.current = null; }}
+          onPointerCancel={() => { resizeRef.current = null; }}
         />
       )}
     </div>
@@ -885,7 +1013,7 @@ interface LineEndpointHandleProps {
   pageWidth: number;
   pageHeight: number;
   snapToGuides: boolean;
-  onGuidePoint: (point: Point) => void;
+  onGuidePoint: (point: Point | null) => void;
   onBeginMutation: () => void;
   onUpdate: (patch: Partial<EditorElement>) => void;
 }
@@ -965,8 +1093,14 @@ function LineEndpointHandle({
             : lineGeometry(interaction.fixed, moving, pageWidth, pageHeight)) as Partial<EditorElement>,
         );
       }}
-      onPointerUp={() => { interactionRef.current = null; }}
-      onPointerCancel={() => { interactionRef.current = null; }}
+      onPointerUp={() => {
+        interactionRef.current = null;
+        onGuidePoint(null);
+      }}
+      onPointerCancel={() => {
+        interactionRef.current = null;
+        onGuidePoint(null);
+      }}
     />
   );
 }

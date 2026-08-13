@@ -50,7 +50,7 @@ export interface EditorPage {
 }
 
 export type EditorSelection =
-  | { kind: "element"; id: string }
+  | { kind: "elements"; pageId: string; ids: string[]; primaryId: string }
   | { kind: "space"; pageId: string; id: string }
   | null;
 

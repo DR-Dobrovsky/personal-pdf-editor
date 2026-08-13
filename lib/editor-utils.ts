@@ -73,6 +73,74 @@ export const lineEndpoints = (element: LineElement) => ({
   },
 });
 
+export interface VisualBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
+export const elementVisualBounds = (element: EditorElement): VisualBounds => {
+  if (element.type !== "line") {
+    return {
+      left: element.x,
+      top: element.y,
+      right: element.x + element.width,
+      bottom: element.y + element.height,
+      width: element.width,
+      height: element.height,
+    };
+  }
+  const { start, end } = lineEndpoints(element);
+  const left = Math.min(start.x, end.x);
+  const top = Math.min(start.y, end.y);
+  const right = Math.max(start.x, end.x);
+  const bottom = Math.max(start.y, end.y);
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+};
+
+export const elementsVisualBounds = (
+  elements: readonly EditorElement[],
+): VisualBounds | null => {
+  if (elements.length === 0) return null;
+  const bounds = elements.map(elementVisualBounds);
+  const left = Math.min(...bounds.map((value) => value.left));
+  const top = Math.min(...bounds.map((value) => value.top));
+  const right = Math.max(...bounds.map((value) => value.right));
+  const bottom = Math.max(...bounds.map((value) => value.bottom));
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+};
+
+export const visualBoundsIntersect = (left: VisualBounds, right: VisualBounds) =>
+  left.left <= right.right
+  && left.right >= right.left
+  && left.top <= right.bottom
+  && left.bottom >= right.top;
+
+export const translateElement = (
+  element: EditorElement,
+  deltaX: number,
+  deltaY: number,
+  pageWidth: number,
+  pageHeight: number,
+): EditorElement => {
+  if (element.type !== "line") {
+    return { ...element, x: element.x + deltaX, y: element.y + deltaY } as EditorElement;
+  }
+  const { start, end } = lineEndpoints(element);
+  return {
+    ...element,
+    ...lineGeometry(
+      { x: start.x + deltaX, y: start.y + deltaY },
+      { x: end.x + deltaX, y: end.y + deltaY },
+      pageWidth,
+      pageHeight,
+    ),
+  };
+};
+
 export const lineMetrics = (element: LineElement) => {
   const { start, end } = lineEndpoints(element);
   const dx = end.x - start.x;
