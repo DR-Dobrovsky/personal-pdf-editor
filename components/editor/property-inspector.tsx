@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { AlignCenter, AlignLeft, AlignRight, Copy, Trash2 } from "lucide-react";
-import { EDITOR_FONTS, editorFont, isTextFontFamily } from "@/lib/editor-fonts";
+import { EDITOR_FONT_GROUPS, editorFont, isTextFontFamily } from "@/lib/editor-fonts";
 import { lineMetrics } from "@/lib/editor-utils";
 import type { EditorElement, LineElement, SpaceBand } from "@/types/editor";
 
@@ -127,8 +127,12 @@ export default function PropertyInspector({
                   }
                 }}
               >
-                {EDITOR_FONTS.map((font) => (
-                  <option key={font.id} value={font.id}>{font.label}</option>
+                {EDITOR_FONT_GROUPS.map((group) => (
+                  <optgroup key={group.group} label={group.label}>
+                    {group.fonts.map((font) => (
+                      <option key={font.id} value={font.id}>{font.label}</option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </label>
@@ -157,7 +161,7 @@ export default function PropertyInspector({
               disabled={!editorFont(element.fontFamily).supportsBold}
               title={editorFont(element.fontFamily).supportsBold
                 ? "Bold"
-                : "Aeonik Pro Bold is unavailable until its licensed font file is added"}
+                : "This is a fixed Aeonik face. Select Aeonik Bold or Aeonik Bold Italic from the font menu."}
               onClick={() => fieldChange({ bold: !element.bold } as Partial<EditorElement>)}
             >B</button>
             <div className="segmented-buttons">

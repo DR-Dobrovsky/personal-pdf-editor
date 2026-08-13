@@ -36,6 +36,13 @@ import type {
   TextElement,
 } from "@/types/editor";
 
+export class FontExportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FontExportError";
+  }
+}
+
 const hexToRgb = (hex: string) => {
   const normalized = hex.replace("#", "");
   const value = Number.parseInt(
@@ -171,13 +178,13 @@ const wrapText = (
 
 const customFontBytePromises = new Map<string, Promise<Uint8Array>>();
 
-const loadCustomFontBytes = (url: string) => {
+const loadCustomFontBytes = (url: string, label: string) => {
   const cached = customFontBytePromises.get(url);
   if (cached) return cached;
 
   const request = fetch(url).then(async (response) => {
     if (!response.ok) {
-      throw new Error(`Unable to load the Aeonik Pro font for export (${response.status}).`);
+      throw new FontExportError(`Unable to load ${label} for export (${response.status}).`);
     }
     return new Uint8Array(await response.arrayBuffer());
   });
@@ -190,11 +197,11 @@ type CustomFont = ReturnType<typeof fontkit.create>;
 
 const customFontCoveragePromises = new Map<string, Promise<CustomFont>>();
 
-const loadCustomFontCoverage = (url: string) => {
+const loadCustomFontCoverage = (url: string, label: string) => {
   const cached = customFontCoveragePromises.get(url);
   if (cached) return cached;
 
-  const request = loadCustomFontBytes(url).then((bytes) => fontkit.create(bytes));
+  const request = loadCustomFontBytes(url, label).then((bytes) => fontkit.create(bytes));
   customFontCoveragePromises.set(url, request);
   void request.catch(() => customFontCoveragePromises.delete(url));
   return request;
@@ -231,7 +238,7 @@ const createPdfFontResolver = (document: PDFDocument): PdfFontResolver => {
       : `standard:${source.family}:${bold ? "bold" : "regular"}`;
 
     if (source.kind === "custom") {
-      const coverage = await loadCustomFontCoverage(source.regularUrl);
+      const coverage = await loadCustomFontCoverage(source.regularUrl, definition.label);
       const unsupported = unsupportedCustomFontCharacters(coverage, element.text);
       if (unsupported.length > 0) {
         const preview = unsupported.slice(0, 4).map(({ codePoint, character }) =>
@@ -240,8 +247,8 @@ const createPdfFontResolver = (document: PDFDocument): PdfFontResolver => {
         const remaining = unsupported.length > preview.length
           ? ` and ${unsupported.length - preview.length} more`
           : "";
-        throw new Error(
-          `Aeonik Pro Regular does not include ${preview.join(", ")}${remaining}. Remove or replace these characters, or choose a font that includes them before exporting.`,
+        throw new FontExportError(
+          `${definition.label} does not include ${preview.join(", ")}${remaining}. Remove or replace these characters, or choose a font that includes them before exporting.`,
         );
       }
     }
@@ -250,7 +257,7 @@ const createPdfFontResolver = (document: PDFDocument): PdfFontResolver => {
     if (cached) return cached;
 
     const font = source.kind === "custom"
-      ? loadCustomFontBytes(source.regularUrl).then((bytes) =>
+      ? loadCustomFontBytes(source.regularUrl, definition.label).then((bytes) =>
           document.embedFont(bytes, { subset: true }),
         )
       : document.embedFont(
